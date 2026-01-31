@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="newspaper-grid">
+    <div class="side-column">
+        <!-- Sidebar content (could be ads or links) -->
+         <article>
+            <h2>WANTED!</h2>
+            <div style="text-align: center; border: 3px solid black; padding: 10px; margin: 10px 0;">
+                <img src="https://via.placeholder.com/150/000000/FFFFFF/?text=You?" alt="Silhouette" class="moving-picture" style="width: 100px;">
+                <p style="text-indent: 0; text-align: center;">Have you seen this guy?</p>
+            </div>
+        </article>
+    </div>
+
+    <div class="headline-section">
+        <article>
+             <div class="headline-header">
+                {% if page.extra.integrity %}
+                <div class="randomart-container" title="Article Integrity Verified">
+                    {% if page.extra.randomart %}
+                    <pre class="randomart">{{ page.extra.randomart }}</pre>
+                    {% endif %}
+                </div>
+                {% endif %}
+                <div class="title-wrapper">
+                    <h2>{{ page.title }}</h2>
+                    <div class="meta">By {{ page.extra.author | default(value="Staff Reporter") }}</div>
+                </div>
+            </div>
+
+            {% if page.extra.image %}
+                <img src="{{ page.extra.image }}" alt="Moving Picture" class="moving-picture float-anim">
+            {% endif %}
+            
+            <div class="article-body">
+                {{ page.content | safe }}
+            </div>
+        </article>
+    </div>
+
+    <div class="side-column">
+        <article>
+            <h2>Market Watch</h2>
+            <p style="text-align: center; font-weight: bold;">Galleons: UP</p>
+            <p style="text-align: center; font-weight: bold;">Sickles: DOWN</p>
+        </article>
+    </div>
+</div>
+{% endblock content %}

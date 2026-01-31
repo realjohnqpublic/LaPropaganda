@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="newspaper-grid">
+    <!-- Left Column -->
+    <div class="side-column">
+        {% for page in section.pages %}
+            {% if loop.index0 > 0 and loop.index0 is odd %}
+            <article>
+                <h2>{{ page.title }}</h2>
+                <div class="meta">By {{ page.extra.author | default(value="Staff") }}</div>
+                {% if page.summary %}
+                    {{ page.summary | safe }}
+                    <p class="read-more"><a href="{{ page.permalink }}">Continue reading...</a></p>
+                {% else %}
+                    {{ page.content | striptags | truncate(length=300) }}
+                    <p class="read-more"><a href="{{ page.permalink }}">Continue reading...</a></p>
+                {% endif %}
+            </article>
+            {% endif %}
+        {% endfor %}
+        
+        <!-- Filler Content or Ads -->
+        <article>
+            <h2>WANTED!</h2>
+            <div style="text-align: center; border: 3px solid black; padding: 10px; margin: 10px 0;">
+                <img src="{{ get_url(path="img/wanted_lobster.jpg") }}" alt="WANTED: The Crustacean Menace" class="moving-picture" style="width: 100px;">
+                <p style="text-indent: 0; text-align: center;">Have you seen this guy?</p>
+            </div>
+        </article>
+    </div>
+
+    <!-- Main Headline Column -->
+    <div class="headline-section">
+        {% if section.pages %}
+        {% set featured = section.pages[0] %}
+        <article>
+            <div class="headline-header">
+                <div class="title-wrapper">
+                    <h2><a href="{{ featured.permalink }}" style="text-decoration: none; color: inherit;">{{ featured.title }}</a></h2>
+                    <div class="meta">By {{ featured.extra.author | default(value="Senior Reporter") }}</div>
+                </div>
+            </div>
+            
+             {% if featured.extra.image %}
+                <img src="{{ featured.extra.image }}" alt="Moving Picture" class="moving-picture float-anim">
+            {% endif %}
+            {% if featured.summary %}
+                {{ featured.summary | safe }}
+                <p class="read-more"><a href="{{ featured.permalink }}">Continue reading...</a></p>
+            {% else %}
+                {{ featured.content | striptags | truncate(length=500) }}
+                <p class="read-more"><a href="{{ featured.permalink }}">Continue reading...</a></p>
+            {% endif %}
+        </article>
+        {% else %}
+        <article>
+            <h2>NO NEWS IS GOOD NEWS</h2>
+            <p>The owls are silent today.</p>
+        </article>
+        {% endif %}
+    </div>
+
+    <!-- Right Column -->
+    <div class="side-column">
+        {% for page in section.pages %}
+            {% if loop.index0 > 0 and loop.index0 is even %}
+            <article>
+                <h2>{{ page.title }}</h2>
+                 <div class="meta">By {{ page.extra.author | default(value="Staff") }}</div>
+                {% if page.summary %}
+                    {{ page.summary | safe }}
+                    <p class="read-more"><a href="{{ page.permalink }}">Continue reading...</a></p>
+                {% else %}
+                    {{ page.content | striptags | truncate(length=300) }}
+                    <p class="read-more"><a href="{{ page.permalink }}">Continue reading...</a></p>
+                {% endif %}
+            </article>
+            {% endif %}
+        {% endfor %}
+        
+        <article>
+            <h2>Market Watch</h2>
+            <p style="text-align: center; font-weight: bold;">Galleons: UP</p>
+            <p style="text-align: center; font-weight: bold;">Sickles: DOWN</p>
+            <p style="text-align: center; font-weight: bold;">Knuts: STABLE</p>
+        </article>
+    </div>
+</div>
+{% endblock content %}

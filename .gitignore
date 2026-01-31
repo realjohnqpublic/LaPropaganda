@@ -46,3 +46,28 @@ public/
 sass/
 rust/zola
 
+# ============================================================================
+# CRITICAL SECURITY: Cryptographic Private Keys
+# ============================================================================
+# NEVER COMMIT PRIVATE KEYS TO GIT!
+# These files contain cryptographic signing keys. If leaked, attackers can
+# sign malicious content as authors or the editorial board.
+#
+# Protected files:
+# - Editorial board site-level signing key
+.editorial_board/private_key.secret
+.editorial_board/*.secret
+.editorial_board/*.key
+.editorial_board/*private*
+
+# - Editorial board member keys (multi-sig)
+.editorial_board/board/**/*.secret
+.editorial_board/board/**/*private*
+.editorial_board/board/**/*.key
+
+# - Author signing keys (multi-sig)
+.authors/**/*.secret
+.authors/**/*private*
+.authors/**/*.key
+# ============================================================================
+

@@ -1,0 +1,52 @@
+name: Newsroom Publishing Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  press-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      # Setup Rust for xtask
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          
+      # Install Zola for the build validation (cargo xtask ci runs 'zola build')
+      - name: Install Zola
+        run: |
+          # Download Zola binary for Linux
+          wget -q -O zola.tar.gz https://github.com/getzola/zola/releases/download/v0.18.0/zola-v0.18.0-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf zola.tar.gz
+          sudo mv zola /usr/local/bin/
+          zola --version
+          
+      - name: Run Newsroom Validation (CI)
+        env:
+          EDITORIAL_BOARD_PRIVATE_KEY: ${{ secrets.EDITORIAL_BOARD_PRIVATE_KEY }}
+        run: |
+          cargo run -p xtask -- verify        # Verify content hashes
+          cargo run -p xtask -- hash          # Sign content with editorial key
+          cargo run -p xtask -- verify-signature  # Verify signature
+          cargo run -p xtask -- build          # Build static site
+
+  publish:
+    needs: press-check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      
+      - name: Publish Edition
+        uses: shalzz/zola-deploy-action@master
+        env:
+          PAGES_BRANCH: gh-pages
+          BUILD_DIR: .
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
