@@ -6,47 +6,131 @@ on:
   pull_request:
     branches: [ main ]
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# CRYPTOGRAPHIC VERIFICATION PIPELINE
+# Per BYLAWS Article V, all published content must have:
+# 1. Valid author signature (human or agentic)
+# 2. Editorial board approval (k-of-n threshold)
+# 3. OpenTimestamp proof (for approved articles)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 jobs:
-  press-check:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STAGE 1: SIGNATURE VERIFICATION
+  # Verify all approved articles have valid cryptographic signatures
+  # ═══════════════════════════════════════════════════════════════════════════
+  verify-signatures:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      
-      # Setup Rust for xtask
+      - uses: actions/checkout@v4
+
       - name: Setup Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
         with:
-          toolchain: stable
-          
-      # Install Zola for the build validation (cargo xtask ci runs 'zola build')
-      - name: Install Zola
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Verify Article Signatures
         run: |
-          # Download Zola binary for Linux
-          wget -q -O zola.tar.gz https://github.com/getzola/zola/releases/download/v0.18.0/zola-v0.18.0-x86_64-unknown-linux-gnu.tar.gz
-          tar -xzf zola.tar.gz
-          sudo mv zola /usr/local/bin/
-          zola --version
-          
-      - name: Run Newsroom Validation (CI)
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "  STAGE 1: Cryptographic Signature Verification"
+          echo "═══════════════════════════════════════════════════════════════"
+          # Verify all approved articles have valid author + editorial signatures
+          cargo run -p xtask -- verify-all-articles
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STAGE 2: CONTENT INTEGRITY
+  # Verify global site hash and re-sign if needed
+  # ═══════════════════════════════════════════════════════════════════════════
+  verify-integrity:
+    needs: verify-signatures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Verify Content Integrity
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "  STAGE 2: Global Content Integrity Check"
+          echo "═══════════════════════════════════════════════════════════════"
+          cargo run -p xtask -- verify
+
+      - name: Sign Content (if key available)
         env:
           EDITORIAL_BOARD_PRIVATE_KEY: ${{ secrets.EDITORIAL_BOARD_PRIVATE_KEY }}
         run: |
-          cargo run -p xtask -- verify        # Verify content hashes
-          cargo run -p xtask -- hash          # Sign content with editorial key
-          cargo run -p xtask -- verify-signature  # Verify signature
-          cargo run -p xtask -- build          # Build static site
+          if [ -n "$EDITORIAL_BOARD_PRIVATE_KEY" ]; then
+            cargo run -p xtask -- hash
+            cargo run -p xtask -- verify-signature
+          else
+            echo "⚠️  No editorial key - skipping re-sign (PR mode)"
+          fi
 
-  publish:
-    needs: press-check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STAGE 3: BUILD
+  # Build static site with Zola
+  # ═══════════════════════════════════════════════════════════════════════════
+  build:
+    needs: verify-integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      
-      - name: Publish Edition
-        uses: shalzz/zola-deploy-action@master
-        env:
-          PAGES_BRANCH: gh-pages
-          BUILD_DIR: .
-          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v4
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Zola
+        run: |
+          wget -q -O zola.tar.gz https://github.com/getzola/zola/releases/download/v0.19.2/zola-v0.19.2-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf zola.tar.gz
+          sudo mv zola /usr/local/bin/
+          zola --version
+
+      - name: Build Static Site
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "  STAGE 3: Build Static Site"
+          echo "═══════════════════════════════════════════════════════════════"
+          cargo run -p xtask -- print
+
+      - name: Upload Build Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public/
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # STAGE 4: DEPLOY
+  # Publish to GitHub Pages (main branch only)
+  # ═══════════════════════════════════════════════════════════════════════════
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

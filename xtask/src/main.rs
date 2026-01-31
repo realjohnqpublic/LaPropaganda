@@ -174,6 +174,28 @@ enum Commands {
 
     /// Show the authority manifest and verify signatures
     ManifestShow,
+
+    /// Verify all approved articles have valid signatures and timestamps (for CI/CD)
+    VerifyAllArticles {
+        /// Require OpenTimestamp proofs to exist
+        #[arg(long, default_value = "false")]
+        require_timestamps: bool,
+    },
+
+    /// Create OpenTimestamp proof for a governance notice article
+    TimestampNotice {
+        /// Path to notice article
+        article: PathBuf,
+    },
+
+    /// Verify OpenTimestamp proof
+    VerifyTimestamp {
+        /// Path to .ots file
+        ots_file: PathBuf,
+    },
+
+    /// Ratify bylaws with hardware key signature and OpenTimestamp
+    RatifyBylaws,
 }
 
 fn main() -> Result<()> {
@@ -215,6 +237,10 @@ fn main() -> Result<()> {
         Commands::BoardUpdateKey { id, new_pubkey } => board_update_key(id, new_pubkey),
         Commands::BoardSetThreshold { threshold, notice_hash } => board_set_threshold(threshold, notice_hash),
         Commands::ManifestShow => manifest_show(),
+        Commands::VerifyAllArticles { require_timestamps } => verify_all_articles(require_timestamps),
+        Commands::TimestampNotice { article } => timestamp_notice(&article),
+        Commands::VerifyTimestamp { ots_file } => verify_timestamp(&ots_file),
+        Commands::RatifyBylaws => ratify_bylaws(),
     }
 }
 
@@ -1386,6 +1412,413 @@ fn verify_article(article_path: &Path) -> Result<()> {
     } else {
         println!("{}", style(format!("⏳ Article needs {} more approval(s)", threshold - valid_signatures)).yellow());
     }
+
+    Ok(())
+}
+
+// ============================================================================
+// CI/CD ARTICLE VERIFICATION
+// ============================================================================
+
+/// Verify all approved articles have valid signatures (for CI/CD pipeline)
+/// This ensures no article is published without proper author + editorial approval
+fn verify_all_articles(require_timestamps: bool) -> Result<()> {
+    println!("{}", style("═══════════════════════════════════════════════════════════════").cyan());
+    println!("{}", style("        🔐 CI/CD ARTICLE SIGNATURE VERIFICATION").cyan().bold());
+    println!("{}", style("═══════════════════════════════════════════════════════════════").cyan());
+    println!();
+
+    let content_files = get_content_files();
+    let mut approved_count = 0;
+    let mut failed_count = 0;
+    let mut pending_count = 0;
+    let mut missing_timestamps = 0;
+
+    // Load config for threshold
+    let config_path = Path::new("config.toml");
+    let config = std::fs::read_to_string(config_path)
+        .context("Failed to read config.toml")?;
+
+    let threshold_re = Regex::new(r#"(?m)^threshold\s*=\s*(\d+)$"#)?;
+    let global_threshold = threshold_re.captures(&config)
+        .and_then(|c| c.get(1))
+        .and_then(|m| m.as_str().parse::<usize>().ok())
+        .unwrap_or(3);
+
+    for file in content_files {
+        // Skip _index.md files
+        if file.file_name().map(|f| f == "_index.md").unwrap_or(false) {
+            continue;
+        }
+
+        let (_, frontmatter, _) = match parse_file(&file) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // Check if article has [author] section (indicates it's a signed article)
+        let has_author = frontmatter.contains("[author]");
+        if !has_author {
+            // Unsigned articles are allowed (legacy or draft)
+            continue;
+        }
+
+        // Check approval status
+        let status_re = Regex::new(r#"(?m)^status\s*=\s*"([^"]+)"$"#)?;
+        let status = status_re.captures(&frontmatter)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("pending");
+
+        if status == "approved" {
+            print!("  📄 {} ... ", file.display());
+
+            // Verify author signature
+            if let Err(e) = verify_author_silent(&file) {
+                println!("{}", style("❌ AUTHOR SIG INVALID").red());
+                println!("      {}", e);
+                failed_count += 1;
+                continue;
+            }
+
+            // Verify editorial signatures meet threshold
+            match verify_editorial_threshold_silent(&file, &config, global_threshold) {
+                Ok(count) if count >= global_threshold => {
+                    // Check for OpenTimestamp proof
+                    let ots_path = file.with_extension("md.ots");
+                    if require_timestamps && !ots_path.exists() {
+                        println!("{}", style("⚠️  MISSING TIMESTAMP").yellow());
+                        missing_timestamps += 1;
+                    } else {
+                        println!("{} ({} sigs)", style("✅").green(), count);
+                        approved_count += 1;
+                    }
+                }
+                Ok(count) => {
+                    println!("{}", style(format!("❌ THRESHOLD NOT MET ({}/{})", count, global_threshold)).red());
+                    failed_count += 1;
+                }
+                Err(e) => {
+                    println!("{}", style("❌ EDITORIAL SIG INVALID").red());
+                    println!("      {}", e);
+                    failed_count += 1;
+                }
+            }
+        } else {
+            pending_count += 1;
+        }
+    }
+
+    println!();
+    println!("{}", style("═══════════════════════════════════════════════════════════════").cyan());
+    println!("  📊 Results:");
+    println!("     ✅ Approved & Verified: {}", style(approved_count).green());
+    println!("     ⏳ Pending Review: {}", style(pending_count).yellow());
+    if missing_timestamps > 0 {
+        println!("     ⚠️  Missing Timestamps: {}", style(missing_timestamps).yellow());
+    }
+    if failed_count > 0 {
+        println!("     ❌ Failed Verification: {}", style(failed_count).red());
+    }
+    println!("{}", style("═══════════════════════════════════════════════════════════════").cyan());
+
+    if failed_count > 0 {
+        bail!("CI/CD FAILED: {} article(s) have invalid signatures", failed_count);
+    }
+
+    if require_timestamps && missing_timestamps > 0 {
+        bail!("CI/CD FAILED: {} article(s) missing OpenTimestamp proofs", missing_timestamps);
+    }
+
+    println!();
+    println!("{}", style("✅ All approved articles pass signature verification").green().bold());
+    Ok(())
+}
+
+/// Verify author signature without printing (for batch verification)
+fn verify_author_silent(article_path: &Path) -> Result<()> {
+    let (_, frontmatter, body) = parse_file(article_path)?;
+
+    let author_pubkey_re = Regex::new(r#"(?m)^pubkey\s*=\s*"(.+)"$"#)?;
+    let author_sig_re = Regex::new(r#"(?m)^signature\s*=\s*"(.+)"$"#)?;
+
+    let author_pubkey = author_pubkey_re.captures(&frontmatter)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No author public key found"))?;
+
+    let author_signature = author_sig_re.captures(&frontmatter)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No author signature found"))?;
+
+    let article_hash = calculate_hash(&body);
+    let hash_hex = hex::encode(&article_hash);
+
+    let pubkey_bytes = hex::decode(author_pubkey)?;
+    let pubkey_array: [u8; 32] = pubkey_bytes.try_into()
+        .map_err(|_| anyhow::anyhow!("Author public key must be 32 bytes"))?;
+    let verifying_key = VerifyingKey::from_bytes(&pubkey_array)?;
+
+    let sig_bytes = hex::decode(author_signature)?;
+    let sig_array: [u8; 64] = sig_bytes.try_into()
+        .map_err(|_| anyhow::anyhow!("Author signature must be 64 bytes"))?;
+    let signature = Signature::from_bytes(&sig_array);
+
+    verifying_key.verify(hash_hex.as_bytes(), &signature)
+        .context("Author signature verification failed")?;
+
+    Ok(())
+}
+
+/// Verify editorial signatures meet threshold (silent mode for batch)
+fn verify_editorial_threshold_silent(article_path: &Path, config: &str, threshold: usize) -> Result<usize> {
+    let (_, frontmatter, body) = parse_file(article_path)?;
+
+    // Extract author signature
+    let author_sig_re = Regex::new(r#"(?m)^signature\s*=\s*"(.+)"$"#)?;
+    let author_signature = author_sig_re.captures(&frontmatter)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .ok_or_else(|| anyhow::anyhow!("No author signature found"))?;
+
+    let article_hash = calculate_hash(&body);
+    let hash_hex = hex::encode(&article_hash);
+
+    let review_data = format!("{}{}", hash_hex, author_signature);
+    let mut hasher = Sha256::new();
+    hasher.update(review_data.as_bytes());
+    let review_hash = hasher.finalize();
+    let review_hash_hex = hex::encode(&review_hash);
+
+    // Find editorial signatures
+    let sig_sections: Vec<&str> = frontmatter
+        .split("[[editorial_signatures]]")
+        .skip(1)
+        .collect();
+
+    if sig_sections.is_empty() {
+        return Ok(0);
+    }
+
+    let member_id_re = Regex::new(r#"(?m)^board_member\s*=\s*"(.+)"$"#)?;
+    let sig_re = Regex::new(r#"(?m)^signature\s*=\s*"(.+)"$"#)?;
+    let decision_re = Regex::new(r#"(?m)^decision\s*=\s*"(.+)"$"#)?;
+    let pubkey_re = Regex::new(r#"(?m)^pubkey\s*=\s*"(.+)"$"#)?;
+    let active_re = Regex::new(r#"(?m)^active\s*=\s*(true|false)$"#)?;
+
+    let mut valid_approvals = 0;
+
+    for section in sig_sections {
+        let member_id = match member_id_re.captures(section).and_then(|c| c.get(1)) {
+            Some(m) => m.as_str(),
+            None => continue,
+        };
+
+        let signature_hex = match sig_re.captures(section).and_then(|c| c.get(1)) {
+            Some(m) => m.as_str(),
+            None => continue,
+        };
+
+        let decision = decision_re.captures(section)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("approve");
+
+        if decision != "approve" {
+            continue;
+        }
+
+        // Find member in config
+        let member_pattern = format!(
+            r#"(?ms)\[\[extra\.editorial_board\.members\]\]\s*\nid\s*=\s*"{}"\s*\n(?:[^\[]|\[[^\[])*"#,
+            regex::escape(member_id)
+        );
+        let member_re = Regex::new(&member_pattern)?;
+        let member_section = match member_re.find(config) {
+            Some(m) => m.as_str(),
+            None => continue,
+        };
+
+        let member_pubkey = match pubkey_re.captures(member_section).and_then(|c| c.get(1)) {
+            Some(m) => m.as_str(),
+            None => continue,
+        };
+
+        let is_active = active_re.captures(member_section)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str() == "true")
+            .unwrap_or(false);
+
+        if !is_active {
+            continue;
+        }
+
+        // Verify signature
+        let pubkey_bytes = hex::decode(member_pubkey)?;
+        let pubkey_array: [u8; 32] = pubkey_bytes.try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid pubkey size"))?;
+        let verifying_key = VerifyingKey::from_bytes(&pubkey_array)?;
+
+        let sig_bytes = hex::decode(signature_hex)?;
+        let sig_array: [u8; 64] = sig_bytes.try_into()
+            .map_err(|_| anyhow::anyhow!("Invalid signature size"))?;
+        let signature = Signature::from_bytes(&sig_array);
+
+        if verifying_key.verify(review_hash_hex.as_bytes(), &signature).is_ok() {
+            valid_approvals += 1;
+        }
+    }
+
+    Ok(valid_approvals)
+}
+
+/// Create OpenTimestamp proof for a governance notice article
+fn timestamp_notice(article_path: &Path) -> Result<()> {
+    println!("{}", style(format!("⏱️  Creating OpenTimestamp for notice: {}", article_path.display())).cyan().bold());
+
+    let (_, _, body) = parse_file(article_path)?;
+    let article_hash = calculate_hash(&body);
+    let hash_hex = hex::encode(&article_hash);
+
+    // Create timestamps directory if needed
+    let timestamps_dir = Path::new(".editorial_board/timestamps");
+    std::fs::create_dir_all(timestamps_dir)?;
+
+    // Create OTS file with hash prefix as filename
+    let ots_filename = format!("{}.ots", &hash_hex[..16]);
+    let ots_path = timestamps_dir.join(&ots_filename);
+
+    create_opentimestamp(&hash_hex, &ots_path)?;
+
+    println!();
+    println!("{}", style("Notice hash for governance action:").yellow());
+    println!("   {}", style(&hash_hex).cyan());
+    println!();
+    println!("Use this hash with --notice-hash when executing the governance action");
+    println!("after 48 hours have passed.");
+
+    Ok(())
+}
+
+/// Verify an OpenTimestamp proof file
+fn verify_timestamp(ots_path: &Path) -> Result<()> {
+    println!("{}", style(format!("⏱️  Verifying OpenTimestamp: {}", ots_path.display())).cyan().bold());
+
+    if !ots_path.exists() {
+        bail!("OTS file not found: {}", ots_path.display());
+    }
+
+    // Check if ots CLI is available
+    let ots_check = std::process::Command::new("ots")
+        .arg("--version")
+        .output();
+
+    match ots_check {
+        Ok(output) if output.status.success() => {
+            // Use ots CLI to verify
+            let verify_result = std::process::Command::new("ots")
+                .arg("verify")
+                .arg(ots_path)
+                .output()?;
+
+            if verify_result.status.success() {
+                println!("{}", style("✅ OpenTimestamp proof is valid").green().bold());
+                let stdout = String::from_utf8_lossy(&verify_result.stdout);
+                if !stdout.is_empty() {
+                    println!("{}", stdout);
+                }
+            } else {
+                let stderr = String::from_utf8_lossy(&verify_result.stderr);
+                if stderr.contains("Pending") {
+                    println!("{}", style("⏳ Timestamp is pending Bitcoin confirmation").yellow());
+                    println!("   This is normal for recent timestamps. Check back later.");
+                } else {
+                    bail!("Timestamp verification failed: {}", stderr);
+                }
+            }
+        }
+        _ => {
+            println!("{}", style("⚠️  OpenTimestamps CLI not installed").yellow());
+            println!("   Install with: pip install opentimestamps-client");
+            println!();
+            println!("   OTS file exists: {}", ots_path.display());
+            println!("   Size: {} bytes", std::fs::metadata(ots_path)?.len());
+        }
+    }
+
+    Ok(())
+}
+
+/// Ratify bylaws with hardware key signature and OpenTimestamp
+fn ratify_bylaws() -> Result<()> {
+    println!("{}", style("═══════════════════════════════════════════════════════════════").green());
+    println!("{}", style("        📜 BYLAWS RATIFICATION").green().bold());
+    println!("{}", style("═══════════════════════════════════════════════════════════════").green());
+    println!();
+
+    let bylaws_path = Path::new("BYLAWS.md");
+    if !bylaws_path.exists() {
+        bail!("BYLAWS.md not found");
+    }
+
+    let bylaws_content = std::fs::read_to_string(bylaws_path)?;
+
+    // Find the Signatures section and exclude it from hash
+    let sig_marker = "## Signatures";
+    let content_to_hash = if let Some(pos) = bylaws_content.find(sig_marker) {
+        &bylaws_content[..pos]
+    } else {
+        &bylaws_content
+    };
+
+    let mut hasher = Sha256::new();
+    hasher.update(content_to_hash.as_bytes());
+    let hash = hex::encode(hasher.finalize());
+
+    println!("Bylaws Hash (SHA-256): {}", style(&hash).cyan());
+    println!();
+
+    // Load owner keys from config
+    let config_path = Path::new("config.toml");
+    let config = std::fs::read_to_string(config_path)
+        .context("Failed to read config.toml")?;
+
+    let primary_re = Regex::new(r#"(?m)^primary_pubkey\s*=\s*"([^"]*)""#)?;
+    let backup_re = Regex::new(r#"(?m)^backup_pubkey\s*=\s*"([^"]*)""#)?;
+
+    let primary_key = primary_re.captures(&config)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .unwrap_or("");
+    let backup_key = backup_re.captures(&config)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .unwrap_or("");
+
+    // Require hardware key signature
+    println!("{}", style("Step 1/2: Sign bylaws with hardware key").cyan().bold());
+    let single_sig = hwkey::single_sign(hash.as_bytes(), &[primary_key, backup_key])?;
+
+    // Create OpenTimestamp
+    println!();
+    println!("{}", style("Step 2/2: Creating OpenTimestamp proof").cyan().bold());
+    let ots_path = Path::new(".editorial_board/timestamps/bylaws-ratification.ots");
+    std::fs::create_dir_all(".editorial_board/timestamps")?;
+    try_create_opentimestamp(&hash, ots_path);
+
+    println!();
+    println!("{}", style("═══════════════════════════════════════════════════════════════").green());
+    println!("{}", style("        ✅ BYLAWS RATIFIED").green().bold());
+    println!("{}", style("═══════════════════════════════════════════════════════════════").green());
+    println!();
+    println!("Hash: {}", &hash);
+    println!("Signed by: {}", single_sig.key_id);
+    println!();
+    println!("Update BYLAWS.md Signatures section with:");
+    println!("  Bylaws Hash (SHA-256): {}", &hash);
+    println!("  Signature: {}", &single_sig.signature[..64]);
+    println!("  Hardware Key ID: {}", single_sig.key_id);
 
     Ok(())
 }

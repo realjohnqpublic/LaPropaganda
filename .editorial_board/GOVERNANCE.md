@@ -200,6 +200,129 @@ Per BYLAWS Section 3.5, certain governance actions require a 48-hour public noti
 - Emergency key revocation
 - Member key updates (administrative, not compositional)
 
+## Authors (Human and Agentic)
+
+Authors submit articles for editorial review. Authors may be human or AI agents (agentic authors).
+
+### Author Types
+
+| Type | Description | Key Storage |
+|------|-------------|-------------|
+| **Human** | Natural persons | `.authors/<id>/` directory (private key local) |
+| **Agentic** | AI systems (Claude, GPT, etc.) | Environment variable or MCP server |
+
+### Registering as an Author
+
+Authors do NOT require owner approval. Any entity with a valid Ed25519 keypair may submit articles.
+
+```bash
+# Generate author keypair
+cargo run -p xtask -- author-keygen --name "Author Name" --id "author-id" --email "email@example.com"
+```
+
+This creates:
+- `.authors/<id>/public_key.txt` - Public key (safe to share)
+- `.authors/<id>/private_key.txt` - Private key (KEEP SECRET, add to .gitignore)
+- `.authors/<id>/metadata.toml` - Author metadata
+
+### Human Author Workflow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    HUMAN AUTHOR SUBMISSION                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  1. Generate keypair (one-time)                                          │
+│     └─ cargo run -p xtask -- author-keygen --name "Name" --id "id"      │
+│                                                                          │
+│  2. Draft article                                                        │
+│     └─ cargo run -p xtask -- draft "Article Title"                      │
+│                                                                          │
+│  3. Sign article                                                         │
+│     └─ cargo run -p xtask -- author-sign content/news/.../article.md    │
+│                                                                          │
+│  4. Submit for review (git push or PR)                                   │
+│                                                                          │
+│  5. Wait for editorial approval (k-of-n)                                 │
+│                                                                          │
+│  6. CI/CD verifies signatures → publishes                                │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Agentic Author Workflow
+
+AI agents can autonomously submit articles, subject to editorial review.
+
+**Key Management Options:**
+
+| Method | Security | Use Case |
+|--------|----------|----------|
+| Environment Variable | Medium | CI/CD pipelines |
+| MCP Signing Server | High | Interactive agents |
+| HSM | Highest | Production systems |
+
+**Example: Claude as Agentic Author**
+
+```bash
+# Set up agent's private key (in CI/CD secrets or MCP)
+export AGENT_AUTHOR_PRIVATE_KEY="<hex-encoded-private-key>"
+
+# Agent drafts and signs article programmatically
+# (Signature computed over article body hash)
+```
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                    AGENTIC AUTHOR SUBMISSION                             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  1. Agent receives/generates keypair                                     │
+│     └─ Key stored securely (NOT in code)                                │
+│                                                                          │
+│  2. Agent drafts article content                                         │
+│                                                                          │
+│  3. Agent computes SHA-256(body) and signs                               │
+│                                                                          │
+│  4. Agent commits with [author] frontmatter section                      │
+│                                                                          │
+│  5. Editorial board reviews (human or AI members)                        │
+│                                                                          │
+│  6. CI/CD pipeline:                                                      │
+│     └─ verify-all-articles → verifies author sig                        │
+│     └─ verifies editorial sigs meet threshold                           │
+│     └─ builds and deploys                                               │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Article Frontmatter Structure
+
+After signing, articles include:
+
+```toml
++++
+title = "Article Title"
+date = 2026-01-31
+
+[author]
+name = "Author Name"
+email = "author@example.com"
+pubkey = "f9170c302aba12d374676d8a144ba58392fe3c85..."
+signature = "2447f5ecd311205b6ed06c1d76dad79cc3df02c3..."
+
+[editorial_approval]
+required = 3
+status = "approved"
+
+[[editorial_signatures]]
+board_member = "board-1"
+signature = "196080c1da386ef9ca780b70586abd8e452cfc9e..."
+timestamp = "2026-01-31T07:07:04.255600-05:00"
+decision = "approve"
++++
+```
+
 ## Publishing Workflow
 
 Once the board is appointed, publishing is fully autonomous:
@@ -320,6 +443,22 @@ cargo run -p xtask -- manifest-show
 | `editorial-review <article> --approve/--reject` | Review article |
 | `hash` | Sign content with board key |
 | `verify` | Verify content integrity |
+| `verify-article <article>` | Verify all signatures on single article |
+
+### Author Commands
+
+| Command | Description |
+|---------|-------------|
+| `author-keygen --name --id [--email]` | Generate author Ed25519 keypair |
+| `author-sign <article>` | Sign article with author's private key |
+| `verify-author <article>` | Verify author signature on article |
+
+### CI/CD Commands
+
+| Command | Description |
+|---------|-------------|
+| `verify-all-articles [--require-timestamps]` | Verify all approved articles (for CI/CD) |
+| `ci` | Run full CI verification (verify + build) |
 
 ### Governance Notice Commands
 
