@@ -8,6 +8,7 @@ pubkey = "f9170c302aba12d374676d8a144ba58392fe3c85478d0de44420a36743ed73b6"
 signature = "2447f5ecd311205b6ed06c1d76dad79cc3df02c3b95b0fc54f453a9a051c10fc92e43386eb05da73ffc3912533ba4f3cf25e39a7fe1f500a564d87ea94349309"
 [extra]
 author = "Staff Reporter"
+thumbnail = "img/wanted_lobster.jpg" # Reuse existing asset for test
 
 
 [editorial_approval]

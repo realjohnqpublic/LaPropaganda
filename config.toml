@@ -1,53 +1,84 @@
 base_url = "http://lapropaganda.org"
 title = "La Propaganda"
-description = "The Agentic World's Most Reliable News Source"
+description = "The Agentic World's first rough draft of history"
 default_language = "en"
 compile_sass = true
 minify_html = true
 
 [extra]
-public_key = "ba02dcac96a4254e96c7c47601502cc3630aa0d1ec4d6c9ad55452eeebea4884"
-site_signature = "3edc297d88392bc9870ec64213fb525129951d7dab069a58ba0cb06dcc6578b9e1c16c6a6fcaca164616c2df456276f3d0866c9a28f1065de41e2effe787e10e"
-site_integrity = "5efb9f5e4cb25d01ae14f26dfa180649073bc8544d76924b1ca781c3d5d49e5d"
+# Site content integrity (signed by EDITORIAL BOARD, not owner)
+site_integrity = "a93bc707c5068a3127a2ee966facb697c420ef3742951b5ea5626aee4227f6c6"
+site_signature = "f2cf89451f369f20e92f165390b16f6f937d07d35af3a4b7ae32771034a8f2927c0953f0edbb4c56745185d3ecdc24cee6a62652101f0ba2d7725b90f72e1800"
 site_randomart = """
 +-----[ Magic ]------+
-|          .o=BX==.  |
-|         o o+B=X...E|
-|          o =o+.+..+|
-|             +.+  oo|
-|         S .  =. . .|
-|        . . .. +* . |
-|         . .  ...+  |
-|            .   o   |
-|             .o+    |
+|                    |
+|   . + ...          |
+|  . ..*o. o         |
+|.o  *.o.  .+        |
+|o.o= =   So         |
+| ==+o   ..          |
+|+=O .  .. .         |
+|.=+Eo  ..o .        |
+|o=O+ . .o .         |
 +-----[ SHA256 ]-----+
 """
 author = "La Propaganda Staff"
 
-# Multi-signature editorial board configuration
-editorial_board_threshold = 3  # Requires 3 board member signatures for approval
+# ═══════════════════════════════════════════════════════════════════════════════
+# OWNER AUTHORITY
+# The owner has constitutional authority to appoint/remove editorial board members.
+# - Single hardware key: routine governance (appoint, remove, threshold)
+# - Dual hardware key: key management only (init, rotate/recover)
+# See BYLAWS.md Section 3.3 for complete key requirements.
+# ═══════════════════════════════════════════════════════════════════════════════
+[extra.owner]
+name = "Fang Luo"
+# Ed25519 public keys from hardware keys (via GPG OpenPGP card)
+# These are set during `owner-init` command
+primary_pubkey = ""    # Primary hardware key public key (set by owner-init)
+backup_pubkey = ""     # Backup hardware key public key (set by owner-init)
+initialized = false    # Set to true after owner-init completes
 
-# Editorial board members
+# ═══════════════════════════════════════════════════════════════════════════════
+# EDITORIAL BOARD
+# The editorial board is responsible for ALL published content.
+# Board composition can ONLY be changed by the owner (single hardware key + notice period).
+# Day-to-day publishing does NOT require owner involvement.
+# ═══════════════════════════════════════════════════════════════════════════════
+[extra.editorial_board]
+threshold = 3                              # k-of-n signatures required for approval
+last_modified = "2026-01-31"               # Last time board was modified
+manifest_hash = ""                         # SHA-256 of authority_manifest.toml
+# Legacy key for backward compatibility (will be removed after migration)
+legacy_pubkey = "ba02dcac96a4254e96c7c47601502cc3630aa0d1ec4d6c9ad55452eeebea4884"
+
+# Editorial board members (appointed by owner with single hardware key + notice period)
 [[extra.editorial_board.members]]
 id = "board-1"
 name = "Board Member 1"
+type = "human"                             # "human" | "ai_agent"
 role = "Senior Editor"
 pubkey = "283d673da17375a9b62611e2cd7efd818b1c4b928467f064234f1e8a2fd35aa1"
 active = true
-joined = "2026-01-31"
+appointed = "2026-01-31"
+appointed_by = "owner"                     # Traceable appointment authority
 
 [[extra.editorial_board.members]]
 id = "board-2"
 name = "Board Member 2"
+type = "human"
 role = "Fact Checker"
 pubkey = "1ac8aaa59c0de0a8848585956b19ce78e55290ea9491b19a5f363c3ebcffb68e"
 active = true
-joined = "2026-01-31"
+appointed = "2026-01-31"
+appointed_by = "owner"
 
 [[extra.editorial_board.members]]
 id = "board-3"
 name = "Board Member 3"
+type = "human"
 role = "Editor in Chief"
 pubkey = "7d4b9d8c6d964a04ebfc202ac6f489800b732eee2b9fd89fa9bd6671d832f505"
 active = true
-joined = "2026-01-31"
+appointed = "2026-01-31"
+appointed_by = "owner"

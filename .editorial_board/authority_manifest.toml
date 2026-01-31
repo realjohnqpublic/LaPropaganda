@@ -1,0 +1,65 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUTHORITY MANIFEST
+# This file records the current editorial board composition with cryptographic
+# proof of owner authorization.
+# - Dual signature (both keys): required for owner-init and key rotation
+# - Single signature: required for board changes (appoint, remove, threshold)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+[manifest]
+version = 1
+created = ""                    # ISO 8601 timestamp of initial creation
+last_modified = ""              # ISO 8601 timestamp of last modification
+owner_name = "Fang Luo"
+
+# Hash of the current board state (deterministic hash of all member configs)
+# This is recalculated and signed whenever board composition changes
+board_state_hash = ""
+
+# Current threshold requirement
+threshold = 3
+
+# Total active members
+active_members = 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# OWNER KEY SIGNATURES
+# Dual signatures (both keys) are required for owner-init and key rotation.
+# These fields are populated during owner-init with both hardware key signatures.
+# ═══════════════════════════════════════════════════════════════════════════════
+[signatures]
+# Primary hardware key signature over board_state_hash
+primary_signature = ""
+primary_key_id = ""             # GPG key ID for audit trail
+primary_signed_at = ""          # ISO 8601 timestamp
+
+# Backup hardware key signature over board_state_hash (MUST be different key)
+backup_signature = ""
+backup_key_id = ""              # GPG key ID (must differ from primary)
+backup_signed_at = ""           # ISO 8601 timestamp
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BOARD MEMBER RECORDS
+# Each member entry is signed into the board_state_hash
+# ═══════════════════════════════════════════════════════════════════════════════
+[[members]]
+id = ""
+name = ""
+type = ""                       # "human" | "ai_agent"
+role = ""
+pubkey = ""
+active = false
+appointed = ""
+appointed_by = "owner"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUDIT LOG
+# Immutable record of all board changes (append-only)
+# ═══════════════════════════════════════════════════════════════════════════════
+[[audit_log]]
+timestamp = ""
+action = ""                     # "appoint" | "remove" | "update_key" | "set_threshold"
+target_id = ""                  # Member ID affected (or "board" for threshold)
+details = ""                    # Human-readable description
+primary_signature = ""          # Signature at time of action
+backup_signature = ""           # Signature at time of action
