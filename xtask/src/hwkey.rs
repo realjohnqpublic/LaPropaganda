@@ -7,6 +7,8 @@
 use anyhow::{bail, Context, Result};
 use console::style;
 use std::process::{Command, Stdio};
+use tempfile::NamedTempFile;
+use std::io::Write;
 
 /// Information about a detected hardware key
 #[derive(Debug, Clone)]
@@ -33,7 +35,9 @@ pub struct DualSignature {
 pub struct SingleSignature {
     pub signature: String,
     pub key_id: String,
+    #[allow(dead_code)]
     pub timestamp: String,
+    #[allow(dead_code)]
     pub hwkey_serial: String,
 }
 
@@ -111,6 +115,7 @@ fn extract_field(output: &str, field_name: &str) -> Option<String> {
 }
 
 /// Get the Ed25519 public key from hardware key in hex format
+#[allow(dead_code)]
 pub fn get_hwkey_pubkey() -> Result<String> {
     let info = detect_hwkey()?
         .ok_or_else(|| anyhow::anyhow!("No hardware key detected"))?;
@@ -144,17 +149,14 @@ pub fn sign_with_hwkey(data: &[u8], key_id: &str) -> Result<String> {
 
     println!("{}", style(format!("  Hardware key detected: Serial {}", info.serial)).dim());
 
-    // Create temp file for data
-    let temp_dir = std::env::temp_dir();
-    let data_path = temp_dir.join("la_propaganda_sign_data");
-    let sig_path = temp_dir.join("la_propaganda_sign_data.sig");
+    // Create temp file for data (securely)
+    let mut data_file = NamedTempFile::new().context("Failed to create temp file for data")?;
+    data_file.write_all(data).context("Failed to write data to temp file")?;
+    let data_path = data_file.path();
 
-    // Clean up any existing files
-    let _ = std::fs::remove_file(&data_path);
-    let _ = std::fs::remove_file(&sig_path);
-
-    std::fs::write(&data_path, data)
-        .context("Failed to write data for signing")?;
+    // Create temp file for signature output (securely)
+    let sig_file = NamedTempFile::new().context("Failed to create temp file for signature")?;
+    let sig_path = sig_file.path();
 
     println!("{}", style("  Touch hardware key to sign...").yellow().bold());
 
@@ -163,6 +165,7 @@ pub fn sign_with_hwkey(data: &[u8], key_id: &str) -> Result<String> {
         .args([
             "--detach-sign",
             "--local-user", key_id,
+            "--yes", // Overwrite the temp file we just created
             "--output", sig_path.to_str().unwrap(),
             data_path.to_str().unwrap(),
         ])
@@ -172,38 +175,40 @@ pub fn sign_with_hwkey(data: &[u8], key_id: &str) -> Result<String> {
         .status()
         .context("Failed to run GPG sign command")?;
 
-    // Clean up data file
-    let _ = std::fs::remove_file(&data_path);
-
     if !output.success() {
-        let _ = std::fs::remove_file(&sig_path);
         bail!("GPG signing failed. Make sure you entered the correct PIN and touched the hardware key.");
     }
 
     // Read signature
-    let signature = std::fs::read(&sig_path)
+    let signature = std::fs::read(sig_path)
         .context("Failed to read signature file")?;
 
-    // Clean up
-    let _ = std::fs::remove_file(&sig_path);
+    // NamedTempFile destructors will clean up files automatically
 
     // Return signature as hex
     Ok(hex::encode(signature))
 }
 
 /// Verify a GPG signature
+#[allow(dead_code)]
 pub fn verify_gpg_signature(data: &[u8], signature_hex: &str, _key_id: &str) -> Result<()> {
     check_gpg()?;
 
     let signature = hex::decode(signature_hex)
         .context("Invalid signature hex")?;
 
-    let temp_dir = std::env::temp_dir();
-    let data_path = temp_dir.join("la_propaganda_verify_data");
-    let sig_path = temp_dir.join("la_propaganda_verify_data.sig");
+    // Create temp files securely with random names
+    let mut data_file = NamedTempFile::new()
+        .context("Failed to create temp file for verification data")?;
+    data_file.write_all(data)
+        .context("Failed to write verification data to temp file")?;
+    let data_path = data_file.path();
 
-    std::fs::write(&data_path, data)?;
-    std::fs::write(&sig_path, &signature)?;
+    let mut sig_file = NamedTempFile::new()
+        .context("Failed to create temp file for signature")?;
+    sig_file.write_all(&signature)
+        .context("Failed to write signature to temp file")?;
+    let sig_path = sig_file.path();
 
     let output = Command::new("gpg")
         .args([
@@ -214,9 +219,7 @@ pub fn verify_gpg_signature(data: &[u8], signature_hex: &str, _key_id: &str) -> 
         .output()
         .context("Failed to run GPG verify")?;
 
-    // Clean up
-    let _ = std::fs::remove_file(&data_path);
-    let _ = std::fs::remove_file(&sig_path);
+    // NamedTempFile destructors will clean up files automatically
 
     if !output.status.success() {
         bail!("Signature verification failed");
@@ -250,13 +253,17 @@ pub fn single_sign(data: &[u8], expected_key_ids: &[&str]) -> Result<SingleSigna
     let detected_key_id = info.key_id.clone()
         .ok_or_else(|| anyhow::anyhow!("No signing key found on this hardware key."))?;
 
-    // Verify it's one of the expected keys
+    // Verify it's one of the expected keys (strict check)
     let is_valid = expected_key_ids.iter().any(|expected| {
-        detected_key_id.contains(expected) || expected.contains(&detected_key_id)
+        *expected == detected_key_id
     });
 
     if !is_valid && !expected_key_ids.is_empty() && !expected_key_ids[0].is_empty() {
-        println!("{}", style(format!("  Warning: Detected key {} may not match registered owner keys", detected_key_id)).yellow());
+        bail!(
+            "Hardware key {} does not match registered owner keys. Expected one of: {:?}",
+            detected_key_id,
+            expected_key_ids
+        );
     }
 
     let signature = sign_with_hwkey(data, &detected_key_id)?;
@@ -291,9 +298,9 @@ pub fn dual_sign(data: &[u8], primary_key_id: &str, backup_key_id: &str) -> Resu
     let info = detect_hwkey()?
         .ok_or_else(|| anyhow::anyhow!("No hardware key detected. Insert PRIMARY hardware key."))?;
 
-    // Verify it's the expected key (if we have the info)
+    // Verify it's the expected key (strict check)
     if let Some(ref detected_id) = info.key_id {
-        if !detected_id.contains(primary_key_id) && !primary_key_id.contains(detected_id) {
+        if detected_id != primary_key_id {
             println!("{}", style(format!("  Warning: Detected key {} may not match expected {}", detected_id, primary_key_id)).yellow());
         }
     }
@@ -340,6 +347,7 @@ pub fn dual_sign(data: &[u8], primary_key_id: &str, backup_key_id: &str) -> Resu
 
 /// Initialize a new Ed25519 key on the hardware key
 /// This generates the key directly on the secure element (key never leaves device)
+#[allow(dead_code)]
 pub fn generate_key_on_hwkey() -> Result<String> {
     check_gpg()?;
 

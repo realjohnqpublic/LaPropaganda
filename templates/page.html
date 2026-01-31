@@ -25,7 +25,17 @@
                 {% endif %}
                 <div class="title-wrapper">
                     <h2>{{ page.title }}</h2>
-                    <div class="meta">By {{ page.extra.author | default(value="Staff Reporter") }}</div>
+                    <div class="meta">
+                        {% if page.extra.author_signature %}
+                        <span class="verified-badge" style="color: #2e7d32; font-weight: bold;" title="Cryptographically Verified Information">
+                            ✓ By {{ page.extra.author_signature.name }}
+                        </span>
+                        {% else %}
+                        <span class="unverified-badge" style="color: #c62828;" title="Source Identity Unconfirmed">
+                            By {{ page.extra.author | default(value="Staff Reporter") }} <span style="font-size: 0.8em; text-transform: uppercase; border: 1px solid #c62828; padding: 0 2px; margin-left: 5px;">Unverified</span>
+                        </span>
+                        {% endif %}
+                    </div>
                 </div>
             </div>
 
