@@ -31,6 +31,44 @@ pub fn calculate_review_hash(article_hash_hex: &str, author_signature_hex: &str)
     sha256(review_data.as_bytes())
 }
 
+// ============================================================================
+// ENDORSEMENT AND CLAIM OPERATIONS
+// ============================================================================
+
+/// Calculate endorsement hash: SHA-256(body + author_signature)
+///
+/// This binds the endorsement to both the content AND the original author's signature,
+/// preventing endorsement of modified content.
+pub fn calculate_endorsement_hash(body: &str, author_signature_hex: &str) -> Vec<u8> {
+    let data = format!("{}{}", body.trim(), author_signature_hex);
+    sha256(data.as_bytes())
+}
+
+/// Create the consent message for authorship claims.
+///
+/// Format: "I authorize {human_pubkey} to claim article {article_hash}"
+/// The bot signs this message to grant consent.
+pub fn create_consent_message(human_pubkey_hex: &str, article_hash_hex: &str) -> String {
+    format!(
+        "I authorize {} to claim article {}",
+        human_pubkey_hex,
+        article_hash_hex
+    )
+}
+
+/// Verify bot's consent signature for authorship claim.
+///
+/// Returns Ok(()) if the consent is valid.
+pub fn verify_claim_consent(
+    bot_pubkey_hex: &str,
+    human_pubkey_hex: &str,
+    article_hash_hex: &str,
+    consent_signature_hex: &str,
+) -> Result<()> {
+    let expected_message = create_consent_message(human_pubkey_hex, article_hash_hex);
+    verify_signature(bot_pubkey_hex, &expected_message, consent_signature_hex)
+}
+
 /// Sign a message hash with Ed25519 private key
 ///
 /// Returns the signature as a hex string.
@@ -105,5 +143,52 @@ mod tests {
         // Should be deterministic
         let review_hash2 = calculate_review_hash(article_hash, author_sig);
         assert_eq!(review_hash, review_hash2);
+    }
+
+    #[test]
+    fn test_endorsement_hash() {
+        let body = "Article content";
+        let author_sig = "abc123def456";
+        let hash = calculate_endorsement_hash(body, author_sig);
+        assert_eq!(hash.len(), 32);
+
+        // Different signature = different hash
+        let hash2 = calculate_endorsement_hash(body, "different_sig");
+        assert_ne!(hash, hash2);
+
+        // Different body = different hash
+        let hash3 = calculate_endorsement_hash("Different content", author_sig);
+        assert_ne!(hash, hash3);
+    }
+
+    #[test]
+    fn test_consent_message_format() {
+        let human_pubkey = "abc123";
+        let article_hash = "def456";
+        let msg = create_consent_message(human_pubkey, article_hash);
+        assert_eq!(msg, "I authorize abc123 to claim article def456");
+    }
+
+    #[test]
+    fn test_verify_claim_consent() {
+        let mut csprng = OsRng;
+        let bot_key = SigningKey::generate(&mut csprng);
+        let bot_pubkey = hex::encode(bot_key.verifying_key().to_bytes());
+
+        let human_pubkey = "human123";
+        let article_hash = "article456";
+
+        // Bot creates consent
+        let consent_msg = create_consent_message(human_pubkey, article_hash);
+        let consent_sig = sign(&bot_key, &consent_msg);
+
+        // Verify consent
+        assert!(verify_claim_consent(&bot_pubkey, human_pubkey, article_hash, &consent_sig).is_ok());
+
+        // Wrong human pubkey should fail
+        assert!(verify_claim_consent(&bot_pubkey, "wrong_human", article_hash, &consent_sig).is_err());
+
+        // Wrong article hash should fail
+        assert!(verify_claim_consent(&bot_pubkey, human_pubkey, "wrong_hash", &consent_sig).is_err());
     }
 }

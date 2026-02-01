@@ -1,13 +1,16 @@
 //! MCP tool implementations for La Propaganda signing server
 
-use crate::article::{self, AuthorSignature, EditorialApproval, EditorialSignature};
+use crate::article::{self, AuthorSignature, AuthorshipClaim, EditorialApproval, EditorialSignature, EndorsementSignature};
 use crate::audit::AuditLogger;
 use crate::crypto;
 use crate::keys::{DelegateType, DelegationInfo, KeyStore, KeyType};
 use crate::rate_limit::RateLimiter;
 use chrono::Local;
 use ed25519_dalek::SigningKey;
-use la_propaganda_core::{derive_id_from_pubkey, is_valid_slug};
+use la_propaganda_core::{
+    calculate_endorsement_hash, create_consent_message, derive_id_from_pubkey,
+    is_valid_slug, verify_claim_consent,
+};
 use rand::rngs::OsRng;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -518,6 +521,88 @@ pub struct RevokeDelegationResponse {
     pub primary_id: String,
     pub delegate_id: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+// ============================================================================
+// ENDORSEMENT AND CLAIM TOOLS
+// Endorsement: Human vouches for Bot-authored content (additive)
+// Claim: Human claims authorship of Bot-signed content (requires mutual consent)
+// ============================================================================
+
+/// Input for endorse_article tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct EndorseArticleInput {
+    /// Endorser's author ID (must have registered key)
+    pub endorser_id: String,
+    /// Path to article markdown file (relative to project root)
+    pub article_path: String,
+}
+
+/// Response for endorse_article tool
+#[derive(Debug, Serialize, Deserialize)]
+pub struct EndorseArticleResponse {
+    pub success: bool,
+    pub article_path: String,
+    pub endorser_id: String,
+    pub endorser_name: String,
+    /// Hash of (body + author_signature.signature) that was signed
+    pub endorsement_hash: String,
+    pub signature: String,
+    pub total_endorsements: usize,
+    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Input for grant_claim_consent tool (Bot grants consent to Human)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct GrantClaimConsentInput {
+    /// Bot's author ID (the original signer)
+    pub bot_author_id: String,
+    /// Path to article markdown file
+    pub article_path: String,
+    /// Human's public key (hex) who will claim authorship
+    pub human_pubkey: String,
+}
+
+/// Response for grant_claim_consent tool
+#[derive(Debug, Serialize, Deserialize)]
+pub struct GrantClaimConsentResponse {
+    pub success: bool,
+    pub article_path: String,
+    pub bot_author_id: String,
+    /// The consent signature to pass to claim_authorship
+    pub consent_signature: String,
+    /// Message that was signed
+    pub consent_message: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Input for claim_authorship tool (Human claims Bot-signed article)
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ClaimAuthorshipInput {
+    /// Human's author ID (will become the claimed author)
+    pub claimer_id: String,
+    /// Path to article markdown file
+    pub article_path: String,
+    /// Bot's consent signature (from grant_claim_consent)
+    pub bot_consent_signature: String,
+}
+
+/// Response for claim_authorship tool
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClaimAuthorshipResponse {
+    pub success: bool,
+    pub article_path: String,
+    pub original_author_id: String,
+    pub claimed_by_id: String,
+    pub claimed_by_name: String,
+    pub claim_signature: String,
+    pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -2008,6 +2093,375 @@ signature = "PENDING_PRIMARY_SIGNATURE"
                 "Delegation '{}/{}' has been revoked. The delegate can no longer sign articles.",
                 primary_id, delegate_id
             ),
+            error: None,
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&response).unwrap(),
+        )]))
+    }
+
+    // ========================================================================
+    // ENDORSEMENT AND CLAIM TOOLS
+    // Endorsement: Human vouches for Bot-authored content
+    // Claim: Human claims authorship with Bot's consent
+    // ========================================================================
+
+    #[tool(description = "Endorse an article as a human vouching for Bot-authored content. Adds your signature to extra.endorsements array. Multiple people can endorse the same article. Article must have author_signature first.")]
+    async fn endorse_article(&self, Parameters(input): Parameters<EndorseArticleInput>) -> Result<CallToolResult, McpError> {
+        let endorser_id = &input.endorser_id;
+        let article_path = self.base_path.join(&input.article_path);
+
+        // Check rate limit
+        if let Err(e) = self.rate_limiter.check(endorser_id) {
+            self.audit.log_error_warn(endorser_id, "endorse_article", &e.to_string());
+            return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+        }
+
+        // Parse article
+        let mut parsed = match article::parse_article(&article_path) {
+            Ok(p) => p,
+            Err(e) => {
+                self.audit.log_error_warn(endorser_id, "endorse_article", &e.to_string());
+                return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+            }
+        };
+
+        // Check author signature exists
+        let author_sig = match &parsed.frontmatter.extra.author_signature {
+            Some(s) => s.clone(),
+            None => {
+                let msg = "Article must have author signature before endorsement";
+                self.audit.log_error_warn(endorser_id, "endorse_article", msg);
+                return Ok(CallToolResult::error(vec![Content::text(msg)]));
+            }
+        };
+
+        // Check for duplicate endorsement
+        if let Some(ref endorsements) = parsed.frontmatter.extra.endorsements {
+            if endorsements.iter().any(|e| e.endorser_id == *endorser_id) {
+                let msg = format!("'{}' has already endorsed this article", endorser_id);
+                self.audit.log_error_warn(endorser_id, "endorse_article", &msg);
+                return Ok(CallToolResult::error(vec![Content::text(msg)]));
+            }
+        }
+
+        // Get endorser's signing method and identity
+        let (signing_method, endorser_name, endorser_pubkey) = {
+            let keys = self.keys.read().await;
+
+            let signing_method = match keys.get_signing_method(endorser_id) {
+                Some(method) => method,
+                None => {
+                    let msg = format!("Endorser '{}' not found", endorser_id);
+                    self.audit.log_error_warn(endorser_id, "endorse_article", &msg);
+                    return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                }
+            };
+            let identity = keys.get_identity(endorser_id).unwrap();
+
+            (
+                signing_method,
+                identity.name.clone(),
+                identity.pubkey.clone(),
+            )
+        };
+
+        // Calculate endorsement hash: SHA256(body + author_signature.signature)
+        // This binds the endorsement to both content AND original signature
+        let endorsement_hash = calculate_endorsement_hash(&parsed.body, &author_sig.signature);
+        let hash_hex = hex::encode(&endorsement_hash);
+
+        // Sign using appropriate method
+        use crate::keys::SigningMethod;
+        let signature = match signing_method {
+            SigningMethod::Software(signing_key) => {
+                crypto::sign(&signing_key, &hash_hex)
+            }
+            SigningMethod::Hardware { pubkey_hex } => {
+                match crate::ssh_signer::sign_with_ssh_agent(&pubkey_hex, hash_hex.as_bytes()) {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        let msg = format!("Hardware key signing failed: {}", e);
+                        self.audit.log_error_warn(endorser_id, "endorse_article:hardware", &msg);
+                        return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                    }
+                }
+            }
+        };
+
+        let timestamp = chrono::Utc::now().to_rfc3339();
+
+        // Derive consistent endorser_id from pubkey
+        let derived_endorser_id = derive_id_from_pubkey(&endorser_pubkey);
+
+        // Add endorsement
+        if parsed.frontmatter.extra.endorsements.is_none() {
+            parsed.frontmatter.extra.endorsements = Some(Vec::new());
+        }
+        if let Some(ref mut endorsements) = parsed.frontmatter.extra.endorsements {
+            endorsements.push(EndorsementSignature {
+                endorser_id: derived_endorser_id,
+                name: endorser_name.clone(),
+                pubkey: endorser_pubkey.clone(),
+                signature: signature.clone(),
+                timestamp: timestamp.clone(),
+            });
+        }
+
+        let total_endorsements = parsed.frontmatter.extra.endorsements
+            .as_ref()
+            .map(|e| e.len())
+            .unwrap_or(0);
+
+        // Write file
+        if let Err(e) = article::write_article(&article_path, &parsed.frontmatter, &parsed.body) {
+            self.audit.log_error_warn(endorser_id, "endorse_article", &e.to_string());
+            return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+        }
+
+        // Audit
+        self.audit.log_signing_warn(endorser_id, "endorse_article", &hash_hex, &signature);
+
+        let response = EndorseArticleResponse {
+            success: true,
+            article_path: input.article_path,
+            endorser_id: endorser_id.clone(),
+            endorser_name,
+            endorsement_hash: hash_hex,
+            signature,
+            total_endorsements,
+            timestamp,
+            error: None,
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&response).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Grant consent for a human to claim authorship of this article. The Bot (original signer) must call this first. Returns consent_signature to pass to claim_authorship.")]
+    async fn grant_claim_consent(&self, Parameters(input): Parameters<GrantClaimConsentInput>) -> Result<CallToolResult, McpError> {
+        let bot_id = &input.bot_author_id;
+        let article_path = self.base_path.join(&input.article_path);
+
+        // Check rate limit
+        if let Err(e) = self.rate_limiter.check(bot_id) {
+            self.audit.log_error_warn(bot_id, "grant_claim_consent", &e.to_string());
+            return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+        }
+
+        // Parse article
+        let parsed = match article::parse_article(&article_path) {
+            Ok(p) => p,
+            Err(e) => {
+                self.audit.log_error_warn(bot_id, "grant_claim_consent", &e.to_string());
+                return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+            }
+        };
+
+        // Verify bot is the author
+        let author_sig = match &parsed.frontmatter.extra.author_signature {
+            Some(s) => s.clone(),
+            None => {
+                let msg = "Article has no author signature";
+                self.audit.log_error_warn(bot_id, "grant_claim_consent", msg);
+                return Ok(CallToolResult::error(vec![Content::text(msg)]));
+            }
+        };
+
+        // Get bot's signing key
+        let signing_key = {
+            let keys = self.keys.read().await;
+            match keys.get_signing_key(bot_id) {
+                Some(key) => key.clone(),
+                None => {
+                    let msg = format!("Bot author '{}' not found", bot_id);
+                    self.audit.log_error_warn(bot_id, "grant_claim_consent", &msg);
+                    return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                }
+            }
+        };
+
+        // Verify the bot's pubkey matches the article's author
+        let bot_pubkey = hex::encode(signing_key.verifying_key().to_bytes());
+        if bot_pubkey != author_sig.pubkey {
+            let msg = format!(
+                "Bot '{}' pubkey does not match article author pubkey. Only the original signer can grant claim consent.",
+                bot_id
+            );
+            self.audit.log_error_warn(bot_id, "grant_claim_consent", &msg);
+            return Ok(CallToolResult::error(vec![Content::text(msg)]));
+        }
+
+        // Calculate article hash for the consent message
+        let article_hash = hex::encode(crypto::calculate_article_hash(&parsed.body));
+
+        // Create consent message using core format
+        let consent_message = create_consent_message(&input.human_pubkey, &article_hash);
+
+        // Sign the consent message
+        let consent_signature = crypto::sign(&signing_key, &consent_message);
+
+        // Audit
+        self.audit.log_signing_warn(
+            bot_id,
+            &format!("grant_claim_consent:for:{}", &input.human_pubkey[..12.min(input.human_pubkey.len())]),
+            &consent_message,
+            &consent_signature,
+        );
+
+        let response = GrantClaimConsentResponse {
+            success: true,
+            article_path: input.article_path,
+            bot_author_id: bot_id.clone(),
+            consent_signature,
+            consent_message,
+            message: format!(
+                "Consent granted. The human with pubkey {} can now call claim_authorship with this consent_signature.",
+                &input.human_pubkey[..12.min(input.human_pubkey.len())]
+            ),
+            error: None,
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&response).unwrap(),
+        )]))
+    }
+
+    #[tool(description = "Claim authorship of a Bot-signed article. Requires bot_consent_signature from grant_claim_consent. Creates authorship_claim block proving mutual consent.")]
+    async fn claim_authorship(&self, Parameters(input): Parameters<ClaimAuthorshipInput>) -> Result<CallToolResult, McpError> {
+        let claimer_id = &input.claimer_id;
+        let article_path = self.base_path.join(&input.article_path);
+
+        // Check rate limit
+        if let Err(e) = self.rate_limiter.check(claimer_id) {
+            self.audit.log_error_warn(claimer_id, "claim_authorship", &e.to_string());
+            return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+        }
+
+        // Parse article
+        let mut parsed = match article::parse_article(&article_path) {
+            Ok(p) => p,
+            Err(e) => {
+                self.audit.log_error_warn(claimer_id, "claim_authorship", &e.to_string());
+                return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+            }
+        };
+
+        // Check author signature exists
+        let author_sig = match &parsed.frontmatter.extra.author_signature {
+            Some(s) => s.clone(),
+            None => {
+                let msg = "Article has no author signature";
+                self.audit.log_error_warn(claimer_id, "claim_authorship", msg);
+                return Ok(CallToolResult::error(vec![Content::text(msg)]));
+            }
+        };
+
+        // Check if already claimed
+        if parsed.frontmatter.extra.authorship_claim.is_some() {
+            let msg = "Article already has an authorship claim";
+            self.audit.log_error_warn(claimer_id, "claim_authorship", msg);
+            return Ok(CallToolResult::error(vec![Content::text(msg)]));
+        }
+
+        // Get claimer's signing method and identity
+        let (signing_method, claimer_name, claimer_pubkey) = {
+            let keys = self.keys.read().await;
+
+            let signing_method = match keys.get_signing_method(claimer_id) {
+                Some(method) => method,
+                None => {
+                    let msg = format!("Claimer '{}' not found", claimer_id);
+                    self.audit.log_error_warn(claimer_id, "claim_authorship", &msg);
+                    return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                }
+            };
+            let identity = keys.get_identity(claimer_id).unwrap();
+
+            (
+                signing_method,
+                identity.name.clone(),
+                identity.pubkey.clone(),
+            )
+        };
+
+        // Verify the consent signature using core function
+        let article_hash = hex::encode(crypto::calculate_article_hash(&parsed.body));
+
+        // Verify bot's consent signature
+        if let Err(e) = verify_claim_consent(
+            &author_sig.pubkey,
+            &claimer_pubkey,
+            &article_hash,
+            &input.bot_consent_signature,
+        ) {
+            let msg = format!(
+                "Invalid bot consent signature: {}. The consent must be signed by the original author for this article.",
+                e
+            );
+            self.audit.log_error_warn(claimer_id, "claim_authorship", &msg);
+            return Ok(CallToolResult::error(vec![Content::text(msg)]));
+        }
+
+        // Sign the claim: Human signs over the bot's consent signature
+        use crate::keys::SigningMethod;
+        let claim_signature = match signing_method {
+            SigningMethod::Software(signing_key) => {
+                crypto::sign(&signing_key, &input.bot_consent_signature)
+            }
+            SigningMethod::Hardware { pubkey_hex } => {
+                match crate::ssh_signer::sign_with_ssh_agent(&pubkey_hex, input.bot_consent_signature.as_bytes()) {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        let msg = format!("Hardware key signing failed: {}", e);
+                        self.audit.log_error_warn(claimer_id, "claim_authorship:hardware", &msg);
+                        return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                    }
+                }
+            }
+        };
+
+        let timestamp = chrono::Utc::now().to_rfc3339();
+
+        // Derive consistent IDs from pubkeys
+        let derived_claimer_id = derive_id_from_pubkey(&claimer_pubkey);
+
+        // Create authorship claim
+        parsed.frontmatter.extra.authorship_claim = Some(AuthorshipClaim {
+            original_author_id: author_sig.author_id.clone(),
+            original_pubkey: author_sig.pubkey.clone(),
+            claimed_by_id: derived_claimer_id,
+            claimed_by_name: claimer_name.clone(),
+            claimed_by_pubkey: claimer_pubkey.clone(),
+            bot_consent_signature: input.bot_consent_signature.clone(),
+            claim_signature: claim_signature.clone(),
+            timestamp: timestamp.clone(),
+        });
+
+        // Write file
+        if let Err(e) = article::write_article(&article_path, &parsed.frontmatter, &parsed.body) {
+            self.audit.log_error_warn(claimer_id, "claim_authorship", &e.to_string());
+            return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
+        }
+
+        // Audit
+        self.audit.log_signing_warn(
+            claimer_id,
+            &format!("claim_authorship:from:{}", author_sig.author_id),
+            &input.bot_consent_signature,
+            &claim_signature,
+        );
+
+        let response = ClaimAuthorshipResponse {
+            success: true,
+            article_path: input.article_path,
+            original_author_id: author_sig.author_id,
+            claimed_by_id: claimer_id.clone(),
+            claimed_by_name: claimer_name,
+            claim_signature,
+            timestamp,
             error: None,
         };
 

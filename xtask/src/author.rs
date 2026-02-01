@@ -9,14 +9,17 @@ use anyhow::{bail, Context, Result};
 use chrono::Local;
 use console::style;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use la_propaganda_core::derive_id_from_pubkey;
+use la_propaganda_core::{
+    calculate_endorsement_hash, create_consent_message, derive_id_from_pubkey,
+    verify_claim_consent,
+};
 use rand::rngs::OsRng;
 use regex::Regex;
 use std::path::Path;
 
 use crate::config::{load_config, validate_slug};
 use crate::content::{calculate_hash, parse_file};
-use crate::types::{AuthorSignature, EditorialApproval};
+use crate::types::{AuthorSignature, AuthorshipClaim, EditorialApproval, EndorsementSignature};
 
 // derive_id_from_pubkey is now imported from la_propaganda_core
 
@@ -576,6 +579,208 @@ pub fn author_revoke(primary_id: &str, delegate_id: &str) -> Result<()> {
     println!("{}", style("Note:").yellow());
     println!("   The delegation record is kept for audit purposes.");
     println!("   Private key has been renamed to private_key.revoked.");
+
+    Ok(())
+}
+
+// ============================================================================
+// ENDORSEMENT AND CLAIM FUNCTIONS
+// ============================================================================
+
+/// Endorse an article as a human vouching for Bot-authored content
+pub fn endorse_article(article_path: &Path, endorser_id: &str) -> Result<()> {
+    println!("{}", style("ENDORSE ARTICLE").cyan().bold());
+    println!();
+
+    validate_slug(endorser_id).context("Invalid endorser ID")?;
+
+    // Parse article
+    let (_full_text, mut frontmatter, body) = parse_file(article_path)?;
+
+    // Check author signature exists
+    let author_sig = frontmatter.extra.author_signature
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Article must have author signature before endorsement"))?
+        .clone();
+
+    // Check for duplicate endorsement
+    if let Some(ref endorsements) = frontmatter.extra.endorsements {
+        if endorsements.iter().any(|e| e.endorser_id == endorser_id || e.name == endorser_id) {
+            bail!("'{}' has already endorsed this article", endorser_id);
+        }
+    }
+
+    // Load endorser metadata and private key
+    let (endorser_name, _, endorser_pubkey) = load_author_metadata(endorser_id)?;
+    let signing_key = load_author_private_key(endorser_id)?;
+
+    // Calculate endorsement hash using core function
+    let endorsement_hash = calculate_endorsement_hash(&body, &author_sig.signature);
+    let hash_hex = hex::encode(&endorsement_hash);
+
+    // Sign
+    let signature = signing_key.sign(hash_hex.as_bytes());
+    let signature_hex = hex::encode(signature.to_bytes());
+
+    let timestamp = chrono::Utc::now().to_rfc3339();
+
+    // Derive consistent endorser_id from pubkey
+    let derived_endorser_id = derive_id_from_pubkey(&endorser_pubkey);
+
+    // Add endorsement
+    if frontmatter.extra.endorsements.is_none() {
+        frontmatter.extra.endorsements = Some(Vec::new());
+    }
+    if let Some(ref mut endorsements) = frontmatter.extra.endorsements {
+        endorsements.push(EndorsementSignature {
+            endorser_id: derived_endorser_id,
+            name: endorser_name.clone(),
+            pubkey: endorser_pubkey.clone(),
+            signature: signature_hex.clone(),
+            timestamp: timestamp.clone(),
+        });
+    }
+
+    let total = frontmatter.extra.endorsements.as_ref().map(|e| e.len()).unwrap_or(0);
+
+    // Write updated article
+    let new_frontmatter_str = toml::to_string(&frontmatter)?;
+    let new_content = format!("+++{}+++{}", new_frontmatter_str, body);
+    std::fs::write(article_path, new_content)?;
+
+    println!("{}", style("Endorsement added!").green().bold());
+    println!();
+    println!("  Endorser: {} ({})", style(&endorser_name).cyan(), &endorser_pubkey[..16]);
+    println!("  Hash:     {}...", style(&hash_hex[..32]).dim());
+    println!("  Total endorsements: {}", style(total).cyan().bold());
+
+    Ok(())
+}
+
+/// Grant consent for a human to claim authorship (Bot must run this)
+pub fn grant_claim_consent(article_path: &Path, bot_id: &str, human_pubkey: &str) -> Result<()> {
+    println!("{}", style("GRANT CLAIM CONSENT").cyan().bold());
+    println!();
+
+    validate_slug(bot_id).context("Invalid bot author ID")?;
+
+    // Parse article
+    let (_full_text, frontmatter, body) = parse_file(article_path)?;
+
+    // Verify bot is the author
+    let author_sig = frontmatter.extra.author_signature
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Article has no author signature"))?;
+
+    // Load bot's private key
+    let signing_key = load_author_private_key(bot_id)?;
+    let bot_pubkey = hex::encode(signing_key.verifying_key().to_bytes());
+
+    // Verify the bot's pubkey matches the article's author
+    if bot_pubkey != author_sig.pubkey {
+        bail!(
+            "Bot '{}' pubkey does not match article author pubkey. Only the original signer can grant claim consent.",
+            bot_id
+        );
+    }
+
+    // Calculate article hash
+    let article_hash = calculate_hash(&body);
+    let hash_hex = hex::encode(&article_hash);
+
+    // Create consent message using core format
+    let consent_message = create_consent_message(human_pubkey, &hash_hex);
+
+    // Sign the consent message
+    let signature = signing_key.sign(consent_message.as_bytes());
+    let consent_signature = hex::encode(signature.to_bytes());
+
+    println!("{}", style("Consent granted!").green().bold());
+    println!();
+    println!("  Bot ID:     {}", style(bot_id).cyan());
+    println!("  Article:    {}", article_path.display());
+    println!("  For human:  {}...", &human_pubkey[..std::cmp::min(24, human_pubkey.len())]);
+    println!();
+    println!("{}", style("Consent signature (give this to the human):").yellow().bold());
+    println!();
+    println!("  {}", style(&consent_signature).green());
+    println!();
+    println!("Human runs:");
+    println!("  cargo run -p xtask -- claim-authorship {} --claimer-id <human-id> --consent-signature {}",
+        article_path.display(),
+        &consent_signature
+    );
+
+    Ok(())
+}
+
+/// Claim authorship of a Bot-signed article (Human runs this)
+pub fn claim_authorship(article_path: &Path, claimer_id: &str, consent_signature: &str) -> Result<()> {
+    println!("{}", style("CLAIM AUTHORSHIP").cyan().bold());
+    println!();
+
+    validate_slug(claimer_id).context("Invalid claimer ID")?;
+
+    // Parse article
+    let (_full_text, mut frontmatter, body) = parse_file(article_path)?;
+
+    // Check author signature exists
+    let author_sig = frontmatter.extra.author_signature
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Article has no author signature"))?
+        .clone();
+
+    // Check if already claimed
+    if frontmatter.extra.authorship_claim.is_some() {
+        bail!("Article already has an authorship claim");
+    }
+
+    // Load claimer metadata and private key
+    let (claimer_name, _, claimer_pubkey) = load_author_metadata(claimer_id)?;
+    let signing_key = load_author_private_key(claimer_id)?;
+
+    // Calculate article hash
+    let article_hash = calculate_hash(&body);
+    let hash_hex = hex::encode(&article_hash);
+
+    // Verify the consent signature using core function
+    verify_claim_consent(&author_sig.pubkey, &claimer_pubkey, &hash_hex, consent_signature)
+        .context("Invalid bot consent signature. The consent must be signed by the original author for this article.")?;
+
+    // Sign the claim: Human signs over the bot's consent signature
+    let signature = signing_key.sign(consent_signature.as_bytes());
+    let claim_signature = hex::encode(signature.to_bytes());
+
+    let timestamp = chrono::Utc::now().to_rfc3339();
+
+    // Derive consistent claimer_id from pubkey
+    let derived_claimer_id = derive_id_from_pubkey(&claimer_pubkey);
+
+    // Create authorship claim
+    frontmatter.extra.authorship_claim = Some(AuthorshipClaim {
+        original_author_id: author_sig.author_id.clone(),
+        original_pubkey: author_sig.pubkey.clone(),
+        claimed_by_id: derived_claimer_id.clone(),
+        claimed_by_name: claimer_name.clone(),
+        claimed_by_pubkey: claimer_pubkey.clone(),
+        bot_consent_signature: consent_signature.to_string(),
+        claim_signature: claim_signature.clone(),
+        timestamp,
+    });
+
+    // Write updated article
+    let new_frontmatter_str = toml::to_string(&frontmatter)?;
+    let new_content = format!("+++{}+++{}", new_frontmatter_str, body);
+    std::fs::write(article_path, new_content)?;
+
+    println!("{}", style("Authorship claimed!").green().bold());
+    println!();
+    println!("  Original author: {} ({}...)", author_sig.name, &author_sig.author_id);
+    println!("  Claimed by:      {} ({})", style(&claimer_name).cyan().bold(), &derived_claimer_id);
+    println!();
+    println!("{}", style("The article now shows dual attribution:").yellow());
+    println!("  - Original bot signature preserved (proof of creation)");
+    println!("  - Human authorship claim added (proof of ownership)");
 
     Ok(())
 }

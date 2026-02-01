@@ -115,6 +115,44 @@ enum Commands {
         #[arg(long)]
         delegate_id: String,
     },
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ENDORSEMENT AND CLAIM COMMANDS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Endorse an article as a human vouching for Bot-authored content
+    Endorse {
+        /// Path to article markdown file
+        article: PathBuf,
+        /// Endorser's author ID (must have registered key)
+        #[arg(long)]
+        endorser_id: String,
+    },
+
+    /// Grant consent for a human to claim authorship (Bot must run this)
+    GrantClaimConsent {
+        /// Path to article markdown file
+        article: PathBuf,
+        /// Bot's author ID (must be the original signer)
+        #[arg(long)]
+        bot_id: String,
+        /// Human's public key (hex) who will claim authorship
+        #[arg(long)]
+        human_pubkey: String,
+    },
+
+    /// Claim authorship of a Bot-signed article (Human runs this)
+    ClaimAuthorship {
+        /// Path to article markdown file
+        article: PathBuf,
+        /// Human's author ID
+        #[arg(long)]
+        claimer_id: String,
+        /// Bot's consent signature (from grant-claim-consent)
+        #[arg(long)]
+        consent_signature: String,
+    },
+
     /// Generate Ed25519 keypair for editorial board member
     BoardKeygen {
         /// Board member's full name
@@ -315,6 +353,17 @@ fn main() -> Result<()> {
         Commands::AuthorListDelegates { id } => author::author_list_delegates(&id),
         Commands::AuthorRevoke { primary_id, delegate_id } => {
             author::author_revoke(&primary_id, &delegate_id)
+        }
+
+        // Endorsement and claim commands
+        Commands::Endorse { article, endorser_id } => {
+            author::endorse_article(&article, &endorser_id)
+        }
+        Commands::GrantClaimConsent { article, bot_id, human_pubkey } => {
+            author::grant_claim_consent(&article, &bot_id, &human_pubkey)
+        }
+        Commands::ClaimAuthorship { article, claimer_id, consent_signature } => {
+            author::claim_authorship(&article, &claimer_id, &consent_signature)
         }
 
         // Board commands

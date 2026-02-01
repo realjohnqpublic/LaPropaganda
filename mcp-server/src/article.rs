@@ -49,6 +49,12 @@ pub struct ExtraConfig {
     pub editorial_approval: Option<EditorialApproval>,
     #[serde(rename = "editorial_signatures")]
     pub editorial_signatures: Option<Vec<EditorialSignature>>,
+    /// Endorsements from humans vouching for this content
+    #[serde(rename = "endorsements")]
+    pub endorsements: Option<Vec<EndorsementSignature>>,
+    /// Authorship claim - human claiming Bot-signed content
+    #[serde(rename = "authorship_claim")]
+    pub authorship_claim: Option<AuthorshipClaim>,
     #[serde(flatten)]
     pub other: BTreeMap<String, toml::Value>,
 }
@@ -82,6 +88,43 @@ pub struct EditorialSignature {
     pub signature: String,
     pub timestamp: String,
     pub decision: String,
+}
+
+/// Endorsement signature - Human vouches for Bot-authored content
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct EndorsementSignature {
+    /// Endorser's pubkey-derived ID
+    pub endorser_id: String,
+    /// Display name
+    pub name: String,
+    /// Ed25519 public key (hex)
+    pub pubkey: String,
+    /// Signature over SHA256(body + author_signature.signature)
+    pub signature: String,
+    /// ISO 8601 timestamp
+    pub timestamp: String,
+}
+
+/// Authorship claim - Human claims authorship of Bot-signed content
+/// Requires mutual consent: Bot grants permission, Human claims
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AuthorshipClaim {
+    /// Original bot author ID
+    pub original_author_id: String,
+    /// Original bot's public key (hex)
+    pub original_pubkey: String,
+    /// Human claiming authorship
+    pub claimed_by_id: String,
+    /// Human's display name
+    pub claimed_by_name: String,
+    /// Human's public key (hex)
+    pub claimed_by_pubkey: String,
+    /// Bot's consent: Sign_Bot("I authorize {human_pubkey} to claim article {hash}")
+    pub bot_consent_signature: String,
+    /// Human's claim: Sign_Human(bot_consent_signature)
+    pub claim_signature: String,
+    /// ISO 8601 timestamp
+    pub timestamp: String,
 }
 
 /// Parsed article data
