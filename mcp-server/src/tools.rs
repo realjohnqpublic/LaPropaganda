@@ -214,6 +214,27 @@ pub struct VerifyResponse {
 // in the full publishing workflow without external file manipulation.
 // ============================================================================
 
+/// Input for list_articles tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ListArticlesInput {
+    /// Filter by status: "pending", "signed", "approved", "all" (default: "all")
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// Summary of an article for list_articles response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ArticleSummary {
+    pub path: String,
+    pub title: String,
+    pub date: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    pub has_author_signature: bool,
+    pub editorial_signatures: usize,
+    pub status: String,
+}
+
 /// Input for read_article_file tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ReadArticleFileInput {
@@ -253,6 +274,9 @@ pub struct SignArticleFileInput {
     pub author_id: String,
     /// Path to article markdown file (relative to project root)
     pub article_path: String,
+    /// Force re-sign by replacing existing signature (default: false)
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Response for sign_article_file tool
@@ -527,9 +551,8 @@ impl LaPropagandaService {
         let signature = crypto::sign(signing_key, &hash_hex);
 
         // Audit
-        let _ = self
-            .audit
-            .log_signing(author_id, "sign_article", &hash_hex, &signature);
+        self.audit
+            .log_signing_warn(author_id, "sign_article", &hash_hex, &signature);
 
         let response = SignArticleResponse {
             success: true,
@@ -744,7 +767,72 @@ impl LaPropagandaService {
         )]))
     }
 
-    #[tool(description = "Sign an article file as author. Reads the file, signs the body, and writes the signature to frontmatter. The article must not already have an author signature.")]
+    #[tool(description = "List all articles with their signature/approval status. Use this to discover articles for signing or reviewing. Filter by status: 'pending' (no author sig), 'signed' (has author sig, awaiting editorial), 'approved' (fully approved), or 'all' (default).")]
+    async fn list_articles(&self, Parameters(input): Parameters<ListArticlesInput>) -> Result<CallToolResult, McpError> {
+        let filter = input.status.as_deref().unwrap_or("all");
+
+        let content_dir = self.base_path.join("content/news");
+        let mut articles = Vec::new();
+
+        if content_dir.exists() {
+            for entry in walkdir::WalkDir::new(&content_dir)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map_or(false, |ext| ext == "md"))
+                .filter(|e| e.file_name() != "_index.md")
+            {
+                if let Ok(parsed) = article::parse_article(entry.path()) {
+                    let has_sig = parsed.frontmatter.extra.author_signature.is_some();
+                    let ed_sigs = parsed.frontmatter.extra.editorial_signatures
+                        .as_ref()
+                        .map_or(0, |s| s.iter().filter(|sig| sig.decision == "approve").count());
+                    let threshold = article::load_threshold(&self.base_path).unwrap_or(3);
+
+                    let status = if ed_sigs >= threshold {
+                        "approved"
+                    } else if has_sig {
+                        "signed"
+                    } else {
+                        "pending"
+                    };
+
+                    // Apply filter
+                    if filter != "all" && filter != status {
+                        continue;
+                    }
+
+                    // Make path relative to base_path for display
+                    let relative_path = entry.path()
+                        .strip_prefix(&self.base_path)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| entry.path().to_string_lossy().to_string());
+
+                    articles.push(ArticleSummary {
+                        path: relative_path,
+                        title: parsed.frontmatter.title,
+                        date: parsed.frontmatter.date,
+                        author: parsed.frontmatter.extra.author,
+                        has_author_signature: has_sig,
+                        editorial_signatures: ed_sigs,
+                        status: status.to_string(),
+                    });
+                }
+            }
+        }
+
+        // Sort by date descending (newest first)
+        articles.sort_by(|a, b| b.date.cmp(&a.date));
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&articles).map_err(|e| McpError {
+                code: rmcp::model::ErrorCode::INTERNAL_ERROR,
+                message: e.to_string().into(),
+                data: None,
+            })?
+        )]))
+    }
+
+    #[tool(description = "Sign an article file as author. Reads the file, signs the body, and writes the signature to frontmatter. Use force=true to replace existing signature.")]
     async fn sign_article_file(&self, Parameters(input): Parameters<SignArticleFileInput>) -> Result<CallToolResult, McpError> {
         let author_id = &input.author_id;
         let article_path = self.base_path.join(&input.article_path);
@@ -766,9 +854,15 @@ impl LaPropagandaService {
 
         // Check if already signed
         if parsed.frontmatter.extra.author_signature.is_some() {
-            let msg = "Article already has author signature. Remove [extra.author_signature] section first to re-sign.";
-            self.audit.log_error_warn(author_id, "sign_article_file", msg);
-            return Ok(CallToolResult::error(vec![Content::text(msg)]));
+            if !input.force {
+                let msg = "Article already has author signature. Use force=true to replace.";
+                self.audit.log_error_warn(author_id, "sign_article_file", msg);
+                return Ok(CallToolResult::error(vec![Content::text(msg)]));
+            }
+            // Clear existing signature for re-signing
+            parsed.frontmatter.extra.author_signature = None;
+            parsed.frontmatter.extra.editorial_approval = None;
+            parsed.frontmatter.extra.editorial_signatures = None;
         }
 
         // Get signing method and identity (clone data to release lock early)
