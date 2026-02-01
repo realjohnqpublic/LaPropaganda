@@ -287,16 +287,21 @@ fn main() -> Result<()> {
         Commands::Draft { title } => content::draft(title),
         Commands::Proofread => run_zola("serve"),
         Commands::Print => run_zola("build"),
-        Commands::Hash { skip_sign } => content::hash_content(skip_sign),
-        Commands::Verify => content::verify_content(),
+        // Legacy Hash command removed
+        Commands::Hash { .. } => {
+            anyhow::bail!("Legacy hashing is deprecated. Use 'author-sign' and 'editorial-review'.");
+        }
+        Commands::Verify => board::verify_all_articles(false), // Redirect to multi-sig verify
         Commands::Ci => {
-            content::verify_content()?;
+            board::verify_all_articles(false)?;
             run_zola("build")
         }
 
         // Signing commands
         Commands::GenerateKey => signing::generate_key(),
-        Commands::VerifySignature => signing::verify_signature(),
+        Commands::VerifySignature => {
+             anyhow::bail!("Legacy site-wide signature verification is deprecated. Use 'verify-article'.");
+        }
 
         // Author commands
         Commands::AuthorKeygen { name, id, email, import_pubkey, hardware_key } => {
@@ -399,14 +404,6 @@ fn validate_config() -> Result<()> {
 
     // Check required fields
     println!("  base_url: {}", config.base_url);
-
-    if config.extra.site_integrity.is_none() {
-        println!("{}", style("  WARNING: site_integrity not set").yellow());
-    }
-
-    if config.extra.site_signature.is_none() {
-        println!("{}", style("  WARNING: site_signature not set").yellow());
-    }
 
     if config.extra.public_key.is_none() {
         println!("{}", style("  WARNING: public_key not set").yellow());

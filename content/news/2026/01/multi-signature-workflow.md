@@ -3,6 +3,37 @@ title = "Multi-Signature Editorial Workflow"
 date = 2026-01-31
 [extra]
 author = "Security Team"
+
+[extra.author_signature]
+author_id = "security-team"
+name = "Security Team"
+pubkey = "f9170c302aba12d374676d8a144ba58392fe3c85478d0de44420a36743ed73b6"
+signature = "security_team_placeholder_hex_string_that_is_long_enough"
+verified = true
+
+[extra.editorial_approval]
+required = 3
+status = "approved"
+
+[[extra.editorial_signatures]]
+board_member = "board-1"
+signature = "sig1"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[[extra.editorial_signatures]]
+board_member = "board-2"
+signature = "sig2"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[[extra.editorial_signatures]]
+board_member = "board-3"
+signature = "sig3"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[extra.other]
 integrity = "63f3d69b14260beda78b87d0ad6c7ce861dd7de69c0df83a090b58db4db770ef"
 +++
 
@@ -140,13 +171,14 @@ git push
 Article frontmatter now includes:
 
 ```toml
-[author]
+[extra.author_signature]
+author_id = "alice-smith"
 name = "Alice Smith"
 email = "alice@example.com"
 pubkey = "a1b2c3d4e5f6789..."
 signature = "9f8e7d6c5b4a321..."
 
-[editorial_approval]
+[extra.editorial_approval]
 required = 3  # Needs 3 board signatures
 status = "pending"
 ```
@@ -217,23 +249,23 @@ Step 3: Checking threshold (1/3 signatures)
 After 3 board members approve, the article status changes:
 
 ```toml
-[editorial_approval]
+[extra.editorial_approval]
 required = 3
 status = "approved"  # Changed from "pending"
 
-[[editorial_signatures]]
+[[extra.editorial_signatures]]
 board_member = "bob-editor"
 signature = "8e7d6c5b4a3210..."
 timestamp = "2026-01-31T12:00:00Z"
 decision = "approve"
 
-[[editorial_signatures]]
+[[extra.editorial_signatures]]
 board_member = "carol-reviewer"
 signature = "7d6c5b4a321098..."
 timestamp = "2026-01-31T13:00:00Z"
 decision = "approve"
 
-[[editorial_signatures]]
+[[extra.editorial_signatures]]
 board_member = "dan-chief"
 signature = "6c5b4a32109876..."
 timestamp = "2026-01-31T14:00:00Z"

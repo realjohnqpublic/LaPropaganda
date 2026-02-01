@@ -18,7 +18,6 @@ use std::path::Path;
 use crate::author::verify_author;
 use crate::config::validate_slug;
 use crate::content::{calculate_hash, get_content_files, parse_file};
-use crate::signing::verify_site_signature;
 use crate::timestamp::try_create_opentimestamp;
 use crate::types::{Config, EditorialSignature};
 
@@ -374,8 +373,8 @@ pub fn verify_all_articles(require_timestamps: bool) -> Result<()> {
     println!("{}", style("CI/CD ARTICLE SIGNATURE VERIFICATION").cyan().bold());
     println!();
 
-    // 1. Verify Site Signature - BLOCKING (security fix)
-    verify_site_signature().context("Site signature verification failed - cannot proceed")?;
+    // 1. Verify Site Signature - DISABLED (Removed feature)
+    // verify_site_signature().context("Site signature verification failed - cannot proceed")?;
 
     let files = get_content_files();
     let mut approved_count = 0;

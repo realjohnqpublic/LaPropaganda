@@ -9,82 +9,7 @@ use std::collections::BTreeMap;
 // TYPE-SAFE ENUMS
 // ============================================================================
 
-/// Approval status for articles
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ApprovalStatus {
-    Pending,
-    Approved,
-    Rejected,
-}
 
-impl Default for ApprovalStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
-}
-
-impl std::fmt::Display for ApprovalStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Pending => write!(f, "pending"),
-            Self::Approved => write!(f, "approved"),
-            Self::Rejected => write!(f, "rejected"),
-        }
-    }
-}
-
-/// Editorial review decision
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ReviewDecision {
-    Approve,
-    Reject,
-}
-
-impl std::fmt::Display for ReviewDecision {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Approve => write!(f, "approve"),
-            Self::Reject => write!(f, "reject"),
-        }
-    }
-}
-
-/// Type of board member
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MemberType {
-    Human,
-    AiAgent,
-}
-
-impl Default for MemberType {
-    fn default() -> Self {
-        Self::Human
-    }
-}
-
-impl std::fmt::Display for MemberType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Human => write!(f, "human"),
-            Self::AiAgent => write!(f, "ai_agent"),
-        }
-    }
-}
-
-impl std::str::FromStr for MemberType {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "human" => Ok(Self::Human),
-            "ai_agent" => Ok(Self::AiAgent),
-            _ => anyhow::bail!("Member type must be 'human' or 'ai_agent'"),
-        }
-    }
-}
 
 // ============================================================================
 // ARTICLE FRONTMATTER TYPES
@@ -94,7 +19,7 @@ impl std::str::FromStr for MemberType {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FrontMatter {
     pub title: String,
-    pub date: String,
+    pub date: toml::Value,
     #[serde(default)]
     pub extra: ExtraConfig,
     #[serde(flatten)]
@@ -106,7 +31,7 @@ pub struct FrontMatter {
 pub struct ExtraConfig {
     pub author: Option<String>,
     pub image: Option<String>,
-    pub integrity: Option<String>,
+    // integrity removed (legacy)
     #[serde(rename = "author_signature")]
     pub author_signature: Option<AuthorSignature>,
     #[serde(rename = "editorial_approval")]
@@ -167,9 +92,7 @@ pub struct Config {
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct SiteExtra {
     pub public_key: Option<String>,
-    pub site_integrity: Option<String>,
-    pub site_signature: Option<String>,
-    pub site_randomart: Option<String>,
+    // site_integrity, site_signature, site_randomart removed (legacy)
     pub editorial_board: Option<EditorialBoardConfig>,
     pub owner: Option<OwnerConfig>,
     #[serde(flatten)]
@@ -183,7 +106,7 @@ pub struct EditorialBoardConfig {
     pub threshold: Option<usize>,
     pub last_modified: Option<String>,
     pub manifest_hash: Option<String>,
-    pub legacy_pubkey: Option<String>,
+    // legacy_pubkey removed
 }
 
 /// Board member configuration

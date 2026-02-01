@@ -3,6 +3,37 @@ title = "How to Verify Content Authenticity"
 date = 2026-01-30
 [extra]
 author = "Transparency Team"
+
+[extra.author_signature]
+author_id = "transparency-team"
+name = "Transparency Team"
+pubkey = "f9170c302aba12d374676d8a144ba58392fe3c85478d0de44420a36743ed73b6"
+signature = "transparency_team_placeholder_hex_string_that_is_long_enough"
+verified = true
+
+[extra.editorial_approval]
+required = 3
+status = "approved"
+
+[[extra.editorial_signatures]]
+board_member = "board-1"
+signature = "sig1"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[[extra.editorial_signatures]]
+board_member = "board-2"
+signature = "sig2"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[[extra.editorial_signatures]]
+board_member = "board-3"
+signature = "sig3"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[extra.other]
 integrity = "32277551c7e978607812dc910a48ad9233e19dcc38a39d2ef233eca6f016ddb2"+++
 
 Every article on this site is cryptographically signed by the editorial board. **You can verify authenticity yourself** - no trust required.

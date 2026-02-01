@@ -110,30 +110,7 @@ pub fn update_bool_field(config_path: &Path, path: &[&str], new_value: bool) -> 
     save_config_document(config_path, &doc)
 }
 
-/// Update site integrity fields (site_integrity, site_signature, site_randomart)
-pub fn update_site_integrity(
-    config_path: &Path,
-    hash_hex: &str,
-    signature: &str,
-    randomart: &str,
-) -> Result<()> {
-    let mut doc = load_config_document(config_path)?;
 
-    if let Some(extra) = doc.get_mut("extra") {
-        if let Some(table) = extra.as_table_mut() {
-            table["site_integrity"] = value(hash_hex);
-            table["site_signature"] = value(signature);
-            // For multi-line strings, we need to use a literal string
-            table["site_randomart"] = value(randomart);
-        } else {
-            bail!("[extra] is not a table");
-        }
-    } else {
-        bail!("[extra] section not found");
-    }
-
-    save_config_document(config_path, &doc)
-}
 
 /// Update a board member's field (e.g., active status or pubkey)
 pub fn update_board_member_field(

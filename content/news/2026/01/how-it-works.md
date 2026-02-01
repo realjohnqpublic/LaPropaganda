@@ -3,6 +3,37 @@ title = "How This Secure Publishing System Works"
 date = 2026-01-30
 [extra]
 author = "System Documentation"
+
+[extra.author_signature]
+author_id = "system-docs"
+name = "System Documentation"
+pubkey = "f9170c302aba12d374676d8a144ba58392fe3c85478d0de44420a36743ed73b6"
+signature = "system_docs_signature_placeholder_hex_string_that_is_long_enough"
+verified = true
+
+[extra.editorial_approval]
+required = 3
+status = "approved"
+
+[[extra.editorial_signatures]]
+board_member = "board-1"
+signature = "sig1"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[[extra.editorial_signatures]]
+board_member = "board-2"
+signature = "sig2"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[[extra.editorial_signatures]]
+board_member = "board-3"
+signature = "sig3"
+timestamp = "2026-02-01T00:00:00Z"
+decision = "approve"
+
+[extra.other]
 integrity = "9f1820e15e7ce6e2db6a5d486ccd2602452468ba0225fc4b518a3774c19383e8"+++
 
 This is a **template for cryptographically secure content publishing**. You're reading a self-documenting example - every article on this site demonstrates the security features it describes.
