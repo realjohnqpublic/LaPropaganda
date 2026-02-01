@@ -4,15 +4,32 @@
 //! compatible with the xtask frontmatter format.
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
+
+/// Custom deserializer that accepts both TOML date (2026-01-31) and string ("2026-01-31")
+fn deserialize_date<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = toml::Value::deserialize(deserializer)?;
+    match value {
+        toml::Value::String(s) => Ok(s),
+        toml::Value::Datetime(dt) => Ok(dt.to_string()),
+        other => Err(serde::de::Error::custom(format!(
+            "expected date string or datetime, got {:?}",
+            other
+        ))),
+    }
+}
 
 /// Article frontmatter structure (matches xtask/src/types.rs)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FrontMatter {
     pub title: String,
+    #[serde(deserialize_with = "deserialize_date")]
     pub date: String,
     #[serde(default)]
     pub extra: ExtraConfig,
@@ -153,6 +170,24 @@ This is the article body.
 "#;
         let parsed = parse_article_content(content).unwrap();
         assert_eq!(parsed.frontmatter.title, "Test Article");
+        assert_eq!(parsed.frontmatter.date, "2026-01-31");
         assert!(parsed.body.contains("article body"));
+    }
+
+    #[test]
+    fn test_parse_toml_date_format() {
+        // Test TOML native date format (without quotes)
+        let content = r#"+++
+title = "Test Article"
+date = 2026-01-31
+[extra]
+author = "Test Author"
++++
+
+Body content.
+"#;
+        let parsed = parse_article_content(content).unwrap();
+        assert_eq!(parsed.frontmatter.title, "Test Article");
+        assert_eq!(parsed.frontmatter.date, "2026-01-31");
     }
 }
