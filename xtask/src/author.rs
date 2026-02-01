@@ -9,24 +9,16 @@ use anyhow::{bail, Context, Result};
 use chrono::Local;
 use console::style;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use la_propaganda_core::derive_id_from_pubkey;
 use rand::rngs::OsRng;
 use regex::Regex;
 use std::path::Path;
-
-use sha2::{Sha256, Digest};
 
 use crate::config::{load_config, validate_slug};
 use crate::content::{calculate_hash, parse_file};
 use crate::types::{AuthorSignature, EditorialApproval};
 
-/// Derive a deterministic ID from pubkey hash
-/// Returns first 12 chars of SHA-256(pubkey_hex) for human-readable uniqueness
-fn derive_id_from_pubkey(pubkey_hex: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(pubkey_hex.as_bytes());
-    let hash = hasher.finalize();
-    hex::encode(&hash[..6])
-}
+// derive_id_from_pubkey is now imported from la_propaganda_core
 
 /// Generate Ed25519 keypair for an author
 ///
@@ -115,9 +107,9 @@ pub fn author_keygen(
     println!();
     println!("{}", style("Next steps:").yellow().bold());
     if hardware_key {
-        println!("1. Ensure your hardware key is connected when signing");
-        println!("2. Sign articles with GPG:");
-        println!("   {}", style("cargo run -p xtask -- author-sign <article.md> --author-id {} --gpg-sign").cyan());
+        println!("1. Hardware key registered (public key imported)");
+        println!("2. Sign via MCP server (will prompt for YubiKey touch)");
+        println!("   Verify key loaded: ssh-add -L");
     } else {
         println!("1. Sign articles with:");
         println!("   {}", style(format!("cargo run -p xtask -- author-sign <article.md> --author-id {}", id)).cyan());

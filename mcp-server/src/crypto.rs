@@ -1,64 +1,16 @@
 //! Cryptographic operations for MCP signing server
 //!
-//! This module provides Ed25519 signing and SHA-256 hashing operations
-//! that are compatible with the xtask implementation.
+//! This module re-exports the shared cryptographic functions from la_propaganda_core
+//! and provides any MCP-specific helpers.
 
-use anyhow::{Context, Result};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use sha2::{Digest, Sha256};
-
-/// Calculate SHA-256 hash of article body (matches xtask/src/main.rs:461-464)
-pub fn calculate_article_hash(body: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(body.trim().as_bytes()); // Trim to avoid whitespace issues
-    hasher.finalize().to_vec()
-}
-
-/// Calculate SHA-256 hash of arbitrary data
-pub fn sha256(data: &[u8]) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hasher.finalize().to_vec()
-}
-
-/// Calculate editorial review hash: SHA-256(article_hash + author_signature)
-/// Matches xtask/src/main.rs editorial_review() logic
-pub fn calculate_review_hash(article_hash_hex: &str, author_signature_hex: &str) -> Vec<u8> {
-    let review_data = format!("{}{}", article_hash_hex, author_signature_hex);
-    sha256(review_data.as_bytes())
-}
-
-/// Sign a message hash with Ed25519 private key
-/// Returns signature as hex string
-pub fn sign(signing_key: &SigningKey, hash_hex: &str) -> String {
-    // Sign the hash hex string (matches xtask pattern)
-    let signature = signing_key.sign(hash_hex.as_bytes());
-    hex::encode(signature.to_bytes())
-}
-
-/// Verify an Ed25519 signature
-pub fn verify_signature(pubkey_hex: &str, message: &str, signature_hex: &str) -> Result<()> {
-    let pubkey_bytes = hex::decode(pubkey_hex)
-        .context("Failed to decode public key hex")?;
-    let pubkey_array: [u8; 32] = pubkey_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Public key must be 32 bytes"))?;
-    let verifying_key = VerifyingKey::from_bytes(&pubkey_array)
-        .context("Invalid public key")?;
-
-    let sig_bytes = hex::decode(signature_hex)
-        .context("Failed to decode signature hex")?;
-    let sig_array: [u8; 64] = sig_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Signature must be 64 bytes"))?;
-    let signature = Signature::from_bytes(&sig_array);
-
-    verifying_key
-        .verify(message.as_bytes(), &signature)
-        .context("Signature verification failed")?;
-
-    Ok(())
-}
+// Re-export all crypto functions from core
+pub use la_propaganda_core::{
+    calculate_hash as calculate_article_hash,
+    calculate_review_hash,
+    sha256,
+    sign,
+    verify_signature,
+};
 
 #[cfg(test)]
 mod tests {

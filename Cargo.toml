@@ -1,3 +1,3 @@
 [workspace]
-members = ["xtask", "mcp-server"]
+members = ["xtask", "mcp-server", "core"]
 resolver = "2"

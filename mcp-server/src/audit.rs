@@ -90,6 +90,32 @@ impl AuditLogger {
         file.flush()?;
         Ok(())
     }
+
+    /// Log signing operation, warn on stderr if audit fails
+    ///
+    /// Use this instead of `let _ = log_signing()` to ensure audit failures
+    /// are visible but don't block operations.
+    pub fn log_signing_warn(
+        &self,
+        identity_id: &str,
+        operation: &str,
+        message_hash: &str,
+        signature: &str,
+    ) {
+        if let Err(e) = self.log_signing(identity_id, operation, message_hash, signature) {
+            eprintln!("[AUDIT WARN] Failed to log signing operation: {}", e);
+        }
+    }
+
+    /// Log error, warn on stderr if audit fails
+    ///
+    /// Use this instead of `let _ = log_error()` to ensure audit failures
+    /// are visible but don't block operations.
+    pub fn log_error_warn(&self, identity_id: &str, operation: &str, error: &str) {
+        if let Err(e) = self.log_error(identity_id, operation, error) {
+            eprintln!("[AUDIT WARN] Failed to log error: {}", e);
+        }
+    }
 }
 
 /// No-op logger for testing

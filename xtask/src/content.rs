@@ -9,6 +9,8 @@
 use anyhow::{bail, Context, Result};
 use chrono::Local;
 use console::style;
+// Re-export calculate_hash from core for use by other modules
+pub use la_propaganda_core::calculate_hash;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -40,12 +42,7 @@ pub fn parse_file(path: &Path) -> Result<(String, FrontMatter, String)> {
     Ok((text, frontmatter, body))
 }
 
-/// Calculate SHA-256 hash of article body
-pub fn calculate_hash(body: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(body.trim().as_bytes()); // Trim to avoid whitespace issues
-    hasher.finalize().to_vec()
-}
+// calculate_hash is now imported from la_propaganda_core
 
 /// Get all content files (markdown articles)
 pub fn get_content_files() -> Vec<PathBuf> {

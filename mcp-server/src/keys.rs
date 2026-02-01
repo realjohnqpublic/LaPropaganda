@@ -59,6 +59,20 @@ pub struct IdentityInfo {
     pub key_type: KeyType,
     /// If this is a delegated identity, contains delegation info
     pub delegation: Option<DelegationInfo>,
+    /// Whether this is a hardware key (requires SSH agent for signing)
+    pub is_hardware_key: bool,
+}
+
+/// Signing method for an identity
+#[derive(Debug, Clone)]
+pub enum SigningMethod {
+    /// Software key stored in memory
+    Software(SigningKey),
+    /// Hardware key requires SSH agent signing
+    Hardware {
+        /// Public key hex for lookup in SSH agent
+        pubkey_hex: String,
+    },
 }
 
 /// Key store that holds loaded signing keys
@@ -296,6 +310,9 @@ impl KeyStore {
             (id.to_string(), None, None)
         };
 
+        // Determine if this is a hardware key (no private key but has identity info)
+        let is_hardware_key = signing_key.is_none();
+
         // Store signing key if available
         if let Some(sk) = signing_key {
             self.keys.insert(id.to_string(), sk);
@@ -311,15 +328,38 @@ impl KeyStore {
                 pubkey,
                 key_type,
                 delegation,
+                is_hardware_key,
             },
         );
 
         Ok(())
     }
 
-    /// Get a signing key by ID
+    /// Get a signing key by ID (returns None for hardware keys)
     pub fn get_signing_key(&self, id: &str) -> Option<&SigningKey> {
         self.keys.get(id)
+    }
+
+    /// Get the signing method for an identity
+    ///
+    /// Returns `SigningMethod::Software` for software keys or
+    /// `SigningMethod::Hardware` for hardware keys (YubiKey/FIDO2)
+    pub fn get_signing_method(&self, id: &str) -> Option<SigningMethod> {
+        // First check for software key
+        if let Some(key) = self.keys.get(id) {
+            return Some(SigningMethod::Software(key.clone()));
+        }
+
+        // Check for hardware key identity
+        if let Some(info) = self.identities.get(id) {
+            if info.is_hardware_key {
+                return Some(SigningMethod::Hardware {
+                    pubkey_hex: info.pubkey.clone(),
+                });
+            }
+        }
+
+        None
     }
 
     /// Get identity metadata by ID
@@ -369,6 +409,30 @@ impl KeyStore {
                 pubkey,
                 key_type,
                 delegation: None,
+                is_hardware_key: false,
+            },
+        );
+    }
+
+    /// Register a hardware key identity (no private key, uses SSH agent)
+    pub fn register_hardware_identity(
+        &mut self,
+        id: &str,
+        name: String,
+        email: Option<String>,
+        pubkey_hex: String,
+    ) {
+        self.identities.insert(
+            id.to_string(),
+            IdentityInfo {
+                id: id.to_string(),
+                name,
+                email,
+                role: None,
+                pubkey: pubkey_hex,
+                key_type: KeyType::Author,
+                delegation: None,
+                is_hardware_key: true,
             },
         );
     }
@@ -398,6 +462,7 @@ impl KeyStore {
                 pubkey,
                 key_type: KeyType::Author,
                 delegation: Some(delegation_info),
+                is_hardware_key: false,
             },
         );
     }

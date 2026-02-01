@@ -22,6 +22,7 @@ pub mod audit;
 pub mod crypto;
 pub mod keys;
 pub mod rate_limit;
+pub mod ssh_signer;
 pub mod tools;
 
 pub use audit::AuditLogger;

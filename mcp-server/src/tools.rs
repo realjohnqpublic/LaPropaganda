@@ -7,6 +7,7 @@ use crate::keys::{DelegateType, DelegationInfo, KeyStore, KeyType};
 use crate::rate_limit::RateLimiter;
 use chrono::Local;
 use ed25519_dalek::SigningKey;
+use la_propaganda_core::{derive_id_from_pubkey, is_valid_slug};
 use rand::rngs::OsRng;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -106,37 +107,7 @@ fn parse_ssh_pubkey(ssh_key: &str) -> Result<(String, String, bool), String> {
     Ok((key_type.to_string(), pubkey_hex, requires_touch))
 }
 
-/// Validate slug format: lowercase letters, numbers, and hyphens only
-/// Must start with a letter and be 2-50 characters
-fn is_valid_slug(s: &str) -> bool {
-    if s.len() < 2 || s.len() > 50 {
-        return false;
-    }
-    let mut chars = s.chars();
-    // First character must be lowercase letter
-    if !chars.next().map(|c| c.is_ascii_lowercase()).unwrap_or(false) {
-        return false;
-    }
-    // Rest must be lowercase letters, numbers, or hyphens
-    for c in chars {
-        if !c.is_ascii_lowercase() && !c.is_ascii_digit() && c != '-' {
-            return false;
-        }
-    }
-    // Must not end with hyphen
-    !s.ends_with('-')
-}
-
-/// Derive a deterministic ID from pubkey hash
-/// Returns first 12 chars of SHA-256(pubkey_hex) for human-readable uniqueness
-fn derive_id_from_pubkey(pubkey_hex: &str) -> String {
-    use sha2::{Sha256, Digest};
-    let mut hasher = Sha256::new();
-    hasher.update(pubkey_hex.as_bytes());
-    let hash = hasher.finalize();
-    // First 12 chars = 48 bits of entropy, collision probability ~1 in 280 trillion
-    hex::encode(&hash[..6])
-}
+// is_valid_slug and derive_id_from_pubkey are now imported from la_propaganda_core
 
 /// Input for sign_article tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -531,7 +502,7 @@ impl LaPropagandaService {
 
         // Check rate limit
         if let Err(e) = self.rate_limiter.check(author_id) {
-            let _ = self.audit.log_error(author_id, "sign_article", &e.to_string());
+            self.audit.log_error_warn(author_id, "sign_article", &e.to_string());
             return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
         }
 
@@ -541,7 +512,7 @@ impl LaPropagandaService {
             Some(key) => key,
             None => {
                 let msg = format!("Author '{}' not found", author_id);
-                let _ = self.audit.log_error(author_id, "sign_article", &msg);
+                self.audit.log_error_warn(author_id, "sign_article", &msg);
                 return Ok(CallToolResult::error(vec![Content::text(msg)]));
             }
         };
@@ -614,7 +585,7 @@ impl LaPropagandaService {
         let signature = crypto::sign(signing_key, &review_hash_hex);
 
         // Audit
-        let _ = self.audit.log_signing(
+        self.audit.log_signing_warn(
             board_member_id,
             &format!("sign_editorial_review:{}", input.decision),
             &review_hash_hex,
@@ -780,7 +751,7 @@ impl LaPropagandaService {
 
         // Check rate limit
         if let Err(e) = self.rate_limiter.check(author_id) {
-            let _ = self.audit.log_error(author_id, "sign_article_file", &e.to_string());
+            self.audit.log_error_warn(author_id, "sign_article_file", &e.to_string());
             return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
         }
 
@@ -788,7 +759,7 @@ impl LaPropagandaService {
         let mut parsed = match article::parse_article(&article_path) {
             Ok(p) => p,
             Err(e) => {
-                let _ = self.audit.log_error(author_id, "sign_article_file", &e.to_string());
+                self.audit.log_error_warn(author_id, "sign_article_file", &e.to_string());
                 return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
             }
         };
@@ -796,36 +767,54 @@ impl LaPropagandaService {
         // Check if already signed
         if parsed.frontmatter.extra.author_signature.is_some() {
             let msg = "Article already has author signature. Remove [extra.author_signature] section first to re-sign.";
-            let _ = self.audit.log_error(author_id, "sign_article_file", msg);
+            self.audit.log_error_warn(author_id, "sign_article_file", msg);
             return Ok(CallToolResult::error(vec![Content::text(msg)]));
         }
 
-        // Get signing key and identity (clone data to release lock early)
-        let (signature, author_name, author_email, author_pubkey, hash_hex) = {
+        // Get signing method and identity (clone data to release lock early)
+        let (signing_method, author_name, author_email, author_pubkey) = {
             let keys = self.keys.read().await;
-            let signing_key = match keys.get_signing_key(author_id) {
-                Some(key) => key,
+
+            let signing_method = match keys.get_signing_method(author_id) {
+                Some(method) => method,
                 None => {
                     let msg = format!("Author '{}' not found", author_id);
-                    let _ = self.audit.log_error(author_id, "sign_article_file", &msg);
+                    self.audit.log_error_warn(author_id, "sign_article_file", &msg);
                     return Ok(CallToolResult::error(vec![Content::text(msg)]));
                 }
             };
             let identity = keys.get_identity(author_id).unwrap();
 
-            // Calculate hash and sign
-            let article_hash = crypto::calculate_article_hash(&parsed.body);
-            let hash_hex = hex::encode(&article_hash);
-            let signature = crypto::sign(signing_key, &hash_hex);
-
             (
-                signature,
+                signing_method,
                 identity.name.clone(),
                 identity.email.clone(),
                 identity.pubkey.clone(),
-                hash_hex,
             )
         }; // keys lock released here
+
+        // Calculate hash
+        let article_hash = crypto::calculate_article_hash(&parsed.body);
+        let hash_hex = hex::encode(&article_hash);
+
+        // Sign using appropriate method
+        use crate::keys::SigningMethod;
+        let signature = match signing_method {
+            SigningMethod::Software(signing_key) => {
+                crypto::sign(&signing_key, &hash_hex)
+            }
+            SigningMethod::Hardware { pubkey_hex } => {
+                // Use SSH agent for hardware key signing (prompts for YubiKey touch)
+                match crate::ssh_signer::sign_with_ssh_agent(&pubkey_hex, hash_hex.as_bytes()) {
+                    Ok(sig) => sig,
+                    Err(e) => {
+                        let msg = format!("Hardware key signing failed: {}. Ensure your YubiKey is connected and key is loaded (ssh-add -l)", e);
+                        self.audit.log_error_warn(author_id, "sign_article_file:hardware", &msg);
+                        return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                    }
+                }
+            }
+        };
 
         // Load threshold from config
         let threshold = article::load_threshold(&self.base_path).unwrap_or(3);
@@ -850,12 +839,12 @@ impl LaPropagandaService {
 
         // Write file
         if let Err(e) = article::write_article(&article_path, &parsed.frontmatter, &parsed.body) {
-            let _ = self.audit.log_error(author_id, "sign_article_file", &e.to_string());
+            self.audit.log_error_warn(author_id, "sign_article_file", &e.to_string());
             return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
         }
 
         // Audit
-        let _ = self.audit.log_signing(author_id, "sign_article_file", &hash_hex, &signature);
+        self.audit.log_signing_warn(author_id, "sign_article_file", &hash_hex, &signature);
 
         let response = SignArticleFileResponse {
             success: true,
@@ -953,7 +942,7 @@ impl LaPropagandaService {
         }
 
         // Audit log
-        let _ = self.audit.log_signing(&input.id, "generate_author_identity", &public_key_hex, "KEYPAIR_GENERATED");
+        self.audit.log_signing_warn(&input.id, "generate_author_identity", &public_key_hex, "KEYPAIR_GENERATED");
 
         let response = GenerateAuthorIdentityResponse {
             success: true,
@@ -1015,8 +1004,21 @@ impl LaPropagandaService {
                 })
                 .unwrap_or_else(|| author_id.clone());
 
+            // Register in key store if not already loaded
+            {
+                let mut keys = self.keys.write().await;
+                if !keys.has_identity(&author_id) {
+                    keys.register_hardware_identity(
+                        &author_id,
+                        existing_name.clone(),
+                        None,
+                        pubkey_hex.clone(),
+                    );
+                }
+            }
+
             // Audit log
-            let _ = self.audit.log_signing(&author_id, "import_hardware_identity:existing", &pubkey_hex, &format!("EXISTING_KEY_RECOGNIZED:{}", key_type));
+            self.audit.log_signing_warn(&author_id, "import_hardware_identity:existing", &pubkey_hex, &format!("EXISTING_KEY_RECOGNIZED:{}", key_type));
 
             let response = ImportHardwareIdentityResponse {
                 success: true,
@@ -1069,8 +1071,19 @@ impl LaPropagandaService {
             ))]));
         }
 
+        // Register the hardware identity in the key store
+        {
+            let mut keys = self.keys.write().await;
+            keys.register_hardware_identity(
+                &author_id,
+                input.name.clone(),
+                input.email.clone(),
+                pubkey_hex.clone(),
+            );
+        }
+
         // Audit log
-        let _ = self.audit.log_signing(&author_id, "import_hardware_identity", &pubkey_hex, &format!("HARDWARE_KEY_IMPORTED:{}", key_type));
+        self.audit.log_signing_warn(&author_id, "import_hardware_identity", &pubkey_hex, &format!("HARDWARE_KEY_IMPORTED:{}", key_type));
 
         let touch_msg = if requires_touch {
             "Touch on YubiKey required for each signature."
@@ -1213,7 +1226,7 @@ impl LaPropagandaService {
         }
 
         // Audit log
-        let _ = self.audit.log_signing(
+        self.audit.log_signing_warn(
             author_id,
             "request_board_promotion:pending",
             &pubkey,
@@ -1259,7 +1272,7 @@ impl LaPropagandaService {
 
         // Check rate limit
         if let Err(e) = self.rate_limiter.check(board_member_id) {
-            let _ = self.audit.log_error(board_member_id, "review_article_file", &e.to_string());
+            self.audit.log_error_warn(board_member_id, "review_article_file", &e.to_string());
             return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
         }
 
@@ -1267,7 +1280,7 @@ impl LaPropagandaService {
         let mut parsed = match article::parse_article(&article_path) {
             Ok(p) => p,
             Err(e) => {
-                let _ = self.audit.log_error(board_member_id, "review_article_file", &e.to_string());
+                self.audit.log_error_warn(board_member_id, "review_article_file", &e.to_string());
                 return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
             }
         };
@@ -1277,7 +1290,7 @@ impl LaPropagandaService {
             Some(s) => s.clone(),
             None => {
                 let msg = "Article must have author signature before editorial review";
-                let _ = self.audit.log_error(board_member_id, "review_article_file", msg);
+                self.audit.log_error_warn(board_member_id, "review_article_file", msg);
                 return Ok(CallToolResult::error(vec![Content::text(msg)]));
             }
         };
@@ -1286,7 +1299,7 @@ impl LaPropagandaService {
         if let Some(ref sigs) = parsed.frontmatter.extra.editorial_signatures {
             if sigs.iter().any(|s| s.board_member == *board_member_id) {
                 let msg = format!("Board member '{}' has already reviewed this article", board_member_id);
-                let _ = self.audit.log_error(board_member_id, "review_article_file", &msg);
+                self.audit.log_error_warn(board_member_id, "review_article_file", &msg);
                 return Ok(CallToolResult::error(vec![Content::text(msg)]));
             }
         }
@@ -1298,7 +1311,7 @@ impl LaPropagandaService {
                 Some(key) => key,
                 None => {
                     let msg = format!("Board member '{}' not found", board_member_id);
-                    let _ = self.audit.log_error(board_member_id, "review_article_file", &msg);
+                    self.audit.log_error_warn(board_member_id, "review_article_file", &msg);
                     return Ok(CallToolResult::error(vec![Content::text(msg)]));
                 }
             };
@@ -1347,12 +1360,12 @@ impl LaPropagandaService {
 
         // Write file
         if let Err(e) = article::write_article(&article_path, &parsed.frontmatter, &parsed.body) {
-            let _ = self.audit.log_error(board_member_id, "review_article_file", &e.to_string());
+            self.audit.log_error_warn(board_member_id, "review_article_file", &e.to_string());
             return Ok(CallToolResult::error(vec![Content::text(e.to_string())]));
         }
 
         // Audit
-        let _ = self.audit.log_signing(
+        self.audit.log_signing_warn(
             board_member_id,
             &format!("review_article_file:{}", input.decision),
             &review_hash_hex,
@@ -1570,7 +1583,7 @@ signature = "PENDING_PRIMARY_SIGNATURE"
 
         // Audit log
         let full_id = format!("{}/{}", primary_id, delegate_id);
-        let _ = self.audit.log_signing(
+        self.audit.log_signing_warn(
             &full_id,
             &format!("delegate_key:{}", delegate_type_str),
             &delegate_pubkey,
@@ -1754,7 +1767,7 @@ signature = "PENDING_PRIMARY_SIGNATURE"
         }
 
         // Audit log
-        let _ = self.audit.log_signing(
+        self.audit.log_signing_warn(
             &full_id,
             "revoke_delegation",
             primary_id,
