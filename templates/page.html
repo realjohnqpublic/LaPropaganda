@@ -27,12 +27,21 @@
                     <h2>{{ page.title }}</h2>
                     <div class="meta">
                         {% if page.extra.author_signature %}
-                        <span class="verified-badge" style="color: #2e7d32; font-weight: bold;" title="Cryptographically Verified Information">
-                            ✓ By {{ page.extra.author_signature.name }}
-                        </span>
+                            {% if page.extra.author_signature.verified %}
+                            {# Verified identity: black text, checkmark #}
+                            <span class="author-verified" style="color: #000; font-weight: bold;" title="Identity verified via social media. Pubkey: {{ page.extra.author_signature.pubkey }}">
+                                ✓ {{ page.extra.author_signature.author_id }} ({{ page.extra.author_signature.name }})
+                            </span>
+                            {% else %}
+                            {# Signed but unverified: red text #}
+                            <span class="author-unverified" style="color: #c62828;" title="Signed but identity not verified. Post pubkey on social media to verify.">
+                                {{ page.extra.author_signature.author_id }} ({{ page.extra.author_signature.name }}) <span style="font-size: 0.8em; text-transform: uppercase; border: 1px solid #c62828; padding: 0 2px; margin-left: 5px;">Unverified</span>
+                            </span>
+                            {% endif %}
                         {% else %}
-                        <span class="unverified-badge" style="color: #c62828;" title="Source Identity Unconfirmed">
-                            By {{ page.extra.author | default(value="Staff Reporter") }} <span style="font-size: 0.8em; text-transform: uppercase; border: 1px solid #c62828; padding: 0 2px; margin-left: 5px;">Unverified</span>
+                        {# No signature at all #}
+                        <span class="author-unsigned" style="color: #c62828;" title="Article not cryptographically signed">
+                            By {{ page.extra.author | default(value="Staff Reporter") }} <span style="font-size: 0.8em; text-transform: uppercase; border: 1px solid #c62828; padding: 0 2px; margin-left: 5px;">Unsigned</span>
                         </span>
                         {% endif %}
                     </div>

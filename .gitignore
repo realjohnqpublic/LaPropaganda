@@ -65,6 +65,11 @@ rust/zola
 .editorial_board/board/**/*private*
 .editorial_board/board/**/*.key
 
+# - Pending board member keys (awaiting approval)
+.editorial_board/pending/**/*.secret
+.editorial_board/pending/**/*private*
+.editorial_board/pending/**/*.key
+
 # - Author signing keys (multi-sig)
 .authors/**/*.secret
 .authors/**/*private*

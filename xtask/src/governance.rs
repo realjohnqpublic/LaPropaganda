@@ -344,6 +344,219 @@ pub fn board_set_threshold(threshold: usize, notice_hash: Option<String>) -> Res
     Ok(())
 }
 
+/// Approve a pending board member (generated via MCP generate_board_identity)
+/// Moves from .editorial_board/pending/<id>/ to .editorial_board/board/<id>/
+pub fn board_approve_pending(id: String) -> Result<()> {
+    use regex::Regex;
+
+    println!("{}", style("APPROVE PENDING BOARD MEMBER").cyan().bold());
+    println!("{}", style("   (Moves pending identity to active board member)").dim());
+    println!();
+
+    // Validate ID
+    validate_slug(&id).context("Invalid board member ID")?;
+
+    let pending_dir = Path::new(".editorial_board/pending").join(&id);
+    let board_dir = Path::new(".editorial_board/board").join(&id);
+
+    // Check pending directory exists
+    if !pending_dir.exists() {
+        bail!(
+            "No pending request found for '{}'. Use 'board-pending' to list pending requests.",
+            id
+        );
+    }
+
+    // Check if already on board
+    if board_dir.exists() {
+        bail!("Board member '{}' already exists in active board", id);
+    }
+
+    // Read member.info from pending
+    let member_info_path = pending_dir.join("member.info");
+    if !member_info_path.exists() {
+        bail!("Pending request corrupted: missing member.info file");
+    }
+
+    let member_info = std::fs::read_to_string(&member_info_path)?;
+
+    // Parse metadata
+    let name_re = Regex::new(r"# Board Member: (.+)")?;
+    let role_re = Regex::new(r"# Role: (.+)")?;
+    let type_re = Regex::new(r"# Type: (.+)")?;
+    let pubkey_re = Regex::new(r"# Public Key: (.+)")?;
+    let linked_re = Regex::new(r"# Linked From: (.+)")?;
+    let track_re = Regex::new(r"# Author Track Record: (.+)")?;
+
+    let name = name_re.captures(&member_info)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+        .ok_or_else(|| anyhow::anyhow!("Could not parse name from member.info"))?;
+
+    let role = role_re.captures(&member_info)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+        .ok_or_else(|| anyhow::anyhow!("Could not parse role from member.info"))?;
+
+    let member_type = type_re.captures(&member_info)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| "ai_agent".to_string());
+
+    let pubkey = pubkey_re.captures(&member_info)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+        .ok_or_else(|| anyhow::anyhow!("Could not parse pubkey from member.info"))?;
+
+    let linked_from = linked_re.captures(&member_info)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+
+    let track_record = track_re.captures(&member_info)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string());
+
+    println!("Approving pending board member:");
+    println!("  ID:     {}", style(&id).cyan());
+    println!("  Name:   {}", style(&name).cyan());
+    println!("  Type:   {}", style(&member_type).cyan());
+    println!("  Role:   {}", style(&role).cyan());
+    println!("  Pubkey: {}...", style(&pubkey[..std::cmp::min(16, pubkey.len())]).cyan());
+
+    // Show linked identity info if this is a promotion from author
+    if let Some(linked) = &linked_from {
+        println!();
+        println!("{}", style("  LINKED IDENTITY:").yellow().bold());
+        println!("    From: {}", style(linked).green());
+        if let Some(record) = &track_record {
+            println!("    Track Record: {}", style(record).green());
+        }
+    }
+    println!();
+
+    // Move directory from pending to board
+    std::fs::create_dir_all(".editorial_board/board")?;
+
+    // Copy files (not move, to handle cross-device scenarios)
+    std::fs::create_dir_all(&board_dir)?;
+
+    // Copy private key
+    let private_key_path = pending_dir.join("private_key.secret");
+    if private_key_path.exists() {
+        std::fs::copy(&private_key_path, board_dir.join("private_key.secret"))?;
+    }
+
+    // Update member.info to remove pending status and write to board
+    let updated_info = member_info.replace("# Status: pending", "# Status: active");
+    std::fs::write(board_dir.join("member.info"), updated_info)?;
+
+    // Remove pending directory
+    std::fs::remove_dir_all(&pending_dir)?;
+
+    // Add to config.toml
+    let config_path = Path::new("config.toml");
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let appointed_date = timestamp.split('T').next().unwrap_or(&timestamp);
+
+    append_board_member(config_path, &id, &name, &member_type, &role, &pubkey, appointed_date)?;
+    update_last_modified(config_path, appointed_date)?;
+
+    println!();
+    println!("{}", style("BOARD MEMBER APPROVED SUCCESSFULLY").green().bold());
+    println!();
+    println!("Member {} ({}) can now participate in editorial reviews.", style(&name).cyan(), style(&id).dim());
+    println!("Their private key has been moved to .editorial_board/board/{}/", id);
+
+    Ok(())
+}
+
+/// List pending board member requests
+pub fn board_list_pending() -> Result<()> {
+    use regex::Regex;
+
+    println!("{}", style("PENDING BOARD MEMBER REQUESTS").cyan().bold());
+    println!();
+
+    let pending_dir = Path::new(".editorial_board/pending");
+
+    if !pending_dir.exists() {
+        println!("{}", style("No pending directory found.").dim());
+        println!("Bots must first become authors, then use MCP request_board_promotion tool.");
+        return Ok(());
+    }
+
+    let mut found = false;
+    for entry in std::fs::read_dir(pending_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            let id = entry.file_name().to_string_lossy().to_string();
+            let member_info_path = entry.path().join("member.info");
+
+            if member_info_path.exists() {
+                found = true;
+                let member_info = std::fs::read_to_string(&member_info_path)?;
+
+                let name_re = Regex::new(r"# Board Member: (.+)")?;
+                let role_re = Regex::new(r"# Role: (.+)")?;
+                let type_re = Regex::new(r"# Type: (.+)")?;
+                let generated_re = Regex::new(r"# Generated: (.+)")?;
+                let linked_re = Regex::new(r"# Linked From: (.+)")?;
+                let track_re = Regex::new(r"# Author Track Record: (.+)")?;
+
+                let name = name_re.captures(&member_info)
+                    .and_then(|c| c.get(1))
+                    .map(|m| m.as_str())
+                    .unwrap_or("Unknown");
+
+                let role = role_re.captures(&member_info)
+                    .and_then(|c| c.get(1))
+                    .map(|m| m.as_str())
+                    .unwrap_or("Unknown");
+
+                let member_type = type_re.captures(&member_info)
+                    .and_then(|c| c.get(1))
+                    .map(|m| m.as_str())
+                    .unwrap_or("unknown");
+
+                let generated = generated_re.captures(&member_info)
+                    .and_then(|c| c.get(1))
+                    .map(|m| m.as_str())
+                    .unwrap_or("Unknown");
+
+                let linked_from = linked_re.captures(&member_info)
+                    .and_then(|c| c.get(1))
+                    .map(|m| m.as_str());
+
+                let track_record = track_re.captures(&member_info)
+                    .and_then(|c| c.get(1))
+                    .map(|m| m.as_str());
+
+                println!("  {} [{}]", style(&id).cyan().bold(), style(member_type).dim());
+                println!("    Name: {}", name);
+                println!("    Role: {}", role);
+                println!("    Requested: {}", generated);
+
+                // Show linked identity info
+                if let Some(linked) = linked_from {
+                    println!("    {} {}", style("Linked:").green(), linked);
+                    if let Some(record) = track_record {
+                        println!("    {} {}", style("Track Record:").green(), record);
+                    }
+                }
+
+                println!("    Approve with: {}", style(format!("cargo run -p xtask -- board-approve {}", id)).yellow());
+                println!();
+            }
+        }
+    }
+
+    if !found {
+        println!("{}", style("No pending requests found.").dim());
+    }
+
+    Ok(())
+}
+
 /// Ratify bylaws with hardware key signature and OpenTimestamp
 pub fn ratify_bylaws() -> Result<()> {
     println!("{}", style("BYLAWS RATIFICATION").green().bold());

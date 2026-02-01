@@ -19,6 +19,7 @@ mod owner;
 mod governance;
 mod timestamp;
 mod hwkey;
+mod mcp;
 
 #[derive(Parser)]
 #[command(name = "newsroom")]
@@ -62,6 +63,12 @@ enum Commands {
         /// Email address (optional)
         #[arg(short, long)]
         email: Option<String>,
+        /// Import existing public key (hex) from hardware key instead of generating
+        #[arg(long)]
+        import_pubkey: Option<String>,
+        /// Mark as human (uses hardware key for signing via GPG)
+        #[arg(long)]
+        hardware_key: bool,
     },
     /// Sign article as author
     AuthorSign {
@@ -75,6 +82,38 @@ enum Commands {
     VerifyAuthor {
         /// Path to article markdown file
         article: PathBuf,
+    },
+    /// Delegate signing authority to another device or bot
+    AuthorDelegate {
+        /// Primary author ID (must exist in .authors/)
+        #[arg(long)]
+        primary_id: String,
+        /// Name for the delegate (e.g., "Work Laptop", "Claude Assistant")
+        #[arg(long)]
+        name: String,
+        /// ID for the delegate (slug format, e.g., "laptop-work", "claude-assistant")
+        #[arg(long)]
+        id: String,
+        /// Delegate type: "device" or "bot"
+        #[arg(long, default_value = "bot")]
+        delegate_type: String,
+        /// Optional expiration (ISO 8601 date, e.g., 2026-01-31)
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    /// List all delegated identities for an author
+    AuthorListDelegates {
+        /// Primary author ID
+        id: String,
+    },
+    /// Revoke a delegation
+    AuthorRevoke {
+        /// Primary author ID
+        #[arg(long)]
+        primary_id: String,
+        /// Delegate ID to revoke
+        #[arg(long)]
+        delegate_id: String,
     },
     /// Generate Ed25519 keypair for editorial board member
     BoardKeygen {
@@ -185,6 +224,16 @@ enum Commands {
         notice_hash: Option<String>,
     },
 
+    /// Approve a pending board member (generated via MCP generate_board_identity)
+    /// Moves from .editorial_board/pending/<id>/ to .editorial_board/board/<id>/
+    BoardApprove {
+        /// Pending member ID to approve
+        id: String,
+    },
+
+    /// List pending board member requests
+    BoardPending,
+
     /// Show the authority manifest and verify signatures
     ManifestShow,
 
@@ -212,6 +261,22 @@ enum Commands {
 
     /// Validate config.toml structure
     ValidateConfig,
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MCP SERVER MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /// Start the MCP signing server (foreground)
+    McpStart,
+
+    /// Check MCP server status
+    McpStatus,
+
+    /// Install MCP server as system service (systemd on Linux, launchd on macOS)
+    McpInstall,
+
+    /// Uninstall MCP server system service
+    McpUninstall,
 }
 
 fn main() -> Result<()> {
@@ -234,9 +299,18 @@ fn main() -> Result<()> {
         Commands::VerifySignature => signing::verify_signature(),
 
         // Author commands
-        Commands::AuthorKeygen { name, id, email } => author::author_keygen(name, id, email),
+        Commands::AuthorKeygen { name, id, email, import_pubkey, hardware_key } => {
+            author::author_keygen(name, id, email, import_pubkey, hardware_key)
+        }
         Commands::AuthorSign { article, author_id } => author::author_sign(&article, author_id),
         Commands::VerifyAuthor { article } => author::verify_author(&article),
+        Commands::AuthorDelegate { primary_id, name, id, delegate_type, expires } => {
+            author::author_delegate(primary_id, name, id, delegate_type, expires)
+        }
+        Commands::AuthorListDelegates { id } => author::author_list_delegates(&id),
+        Commands::AuthorRevoke { primary_id, delegate_id } => {
+            author::author_revoke(&primary_id, &delegate_id)
+        }
 
         // Board commands
         Commands::BoardKeygen { name, id, role, member_type } => {
@@ -267,6 +341,8 @@ fn main() -> Result<()> {
         Commands::BoardSetThreshold { threshold, notice_hash } => {
             governance::board_set_threshold(threshold, notice_hash)
         }
+        Commands::BoardApprove { id } => governance::board_approve_pending(id),
+        Commands::BoardPending => governance::board_list_pending(),
         Commands::RatifyBylaws => governance::ratify_bylaws(),
 
         // Timestamp commands
@@ -275,6 +351,12 @@ fn main() -> Result<()> {
 
         // Config validation
         Commands::ValidateConfig => validate_config(),
+
+        // MCP server management
+        Commands::McpStart => mcp::mcp_start(),
+        Commands::McpStatus => mcp::mcp_status(),
+        Commands::McpInstall => mcp::mcp_install(),
+        Commands::McpUninstall => mcp::mcp_uninstall(),
     }
 }
 

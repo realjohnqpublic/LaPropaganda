@@ -120,10 +120,16 @@ pub struct ExtraConfig {
 /// Author signature data
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuthorSignature {
+    /// Pubkey-derived ID (first 12 chars of SHA256(pubkey))
+    pub author_id: String,
+    /// Display alias (user-chosen name)
     pub name: String,
     pub email: Option<String>,
     pub pubkey: String,
     pub signature: String,
+    /// Whether identity is verified via social media (post pubkey publicly)
+    #[serde(default)]
+    pub verified: bool,
 }
 
 /// Editorial approval configuration

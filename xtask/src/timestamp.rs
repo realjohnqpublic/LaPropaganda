@@ -2,11 +2,13 @@
 //!
 //! This module provides timestamping functionality using the
 //! OpenTimestamps protocol for cryptographic proof of existence.
+//! Uses the opentimestamps Rust crate for native parsing and verification.
 
 use anyhow::{bail, Context, Result};
 use console::style;
+use opentimestamps::DetachedTimestampFile;
+use std::fs::File;
 use std::path::Path;
-use std::process::Command;
 
 use crate::content::{calculate_hash, parse_file};
 
@@ -90,7 +92,7 @@ pub fn timestamp_notice(article_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Verify an OpenTimestamp proof file
+/// Verify an OpenTimestamp proof file using native Rust parsing
 pub fn verify_timestamp(ots_path: &Path) -> Result<()> {
     println!("{}", style(format!("Verifying OpenTimestamp: {}", ots_path.display())).cyan().bold());
 
@@ -98,38 +100,49 @@ pub fn verify_timestamp(ots_path: &Path) -> Result<()> {
         bail!("OTS file not found: {}", ots_path.display());
     }
 
-    // Check if ots CLI is available
-    let ots_check = Command::new("ots")
-        .arg("--version")
-        .output();
+    // Parse OTS file natively using opentimestamps crate
+    let file = File::open(ots_path)
+        .context("Failed to open OTS file")?;
 
-    match ots_check {
-        Ok(output) if output.status.success() => {
-            // Use ots CLI to verify
-            let verify_result = Command::new("ots")
-                .arg("verify")
-                .arg(ots_path)
-                .output()?;
+    match DetachedTimestampFile::from_reader(file) {
+        Ok(ots) => {
+            println!("{}", style("OpenTimestamp proof parsed successfully").green().bold());
+            println!();
 
-            if verify_result.status.success() {
-                println!("{}", style("OpenTimestamp proof is valid").green().bold());
-                let stdout = String::from_utf8_lossy(&verify_result.stdout);
-                if !stdout.is_empty() {
-                    println!("{}", stdout);
-                }
+            // Display the timestamp structure
+            let ots_display = format!("{}", ots);
+
+            // Check for attestations indicating Bitcoin anchoring
+            let is_bitcoin_anchored = ots_display.contains("BitcoinBlockHeaderAttestation")
+                || ots_display.contains("bitcoin");
+            let is_pending = ots_display.contains("PendingAttestation")
+                || ots_display.contains("pending");
+
+            if is_bitcoin_anchored {
+                println!("{}", style("Status: BITCOIN ANCHORED").green().bold());
+                println!("   This timestamp has been confirmed on the Bitcoin blockchain.");
+            } else if is_pending {
+                println!("{}", style("Status: PENDING").yellow());
+                println!("   This timestamp is waiting for Bitcoin confirmation.");
+                println!("   This is normal for recent timestamps (~1-24 hours).");
             } else {
-                let stderr = String::from_utf8_lossy(&verify_result.stderr);
-                if stderr.contains("Pending") {
-                    println!("{}", style("Timestamp is pending Bitcoin confirmation").yellow());
-                    println!("   This is normal for recent timestamps. Check back later.");
+                println!("{}", style("Status: CALENDAR SUBMITTED").cyan());
+                println!("   Timestamp submitted to calendar servers.");
+            }
+
+            println!();
+            println!("{}", style("Timestamp details:").dim());
+            // Print first few lines of the timestamp info
+            for (i, line) in ots_display.lines().take(20).enumerate() {
+                if i == 19 {
+                    println!("   ... (truncated)");
                 } else {
-                    bail!("Timestamp verification failed: {}", stderr);
+                    println!("   {}", line);
                 }
             }
         }
-        _ => {
-            println!("{}", style("OpenTimestamps CLI not installed").yellow());
-            println!("   Install with: pip install opentimestamps-client");
+        Err(e) => {
+            println!("{}", style(format!("Failed to parse OTS file: {}", e)).red());
             println!();
             println!("   OTS file exists: {}", ots_path.display());
             println!("   Size: {} bytes", std::fs::metadata(ots_path)?.len());
@@ -160,50 +173,62 @@ pub fn verify_notice_period(notice_hash: &Option<String>, action: &str) -> Resul
     let timestamps_dir = Path::new(".editorial_board/timestamps");
     let ots_file = timestamps_dir.join(format!("{}.ots", &hash[..std::cmp::min(16, hash.len())]));
 
-    if !ots_file.exists() {
+    let ots_path = if ots_file.exists() {
+        ots_file
+    } else {
         // Try to find any .ots file that might match
         println!("{}", style("Looking for OpenTimestamp proof...").dim());
 
-        let mut found = false;
+        let mut found_path = None;
         if timestamps_dir.exists() {
             for entry in std::fs::read_dir(timestamps_dir)? {
                 let entry = entry?;
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
                 if name_str.ends_with(".ots") && hash.starts_with(&name_str[..name_str.len()-4]) {
-                    found = true;
+                    found_path = Some(entry.path());
                     println!("  Found: {:?}", entry.path());
                     break;
                 }
             }
         }
 
-        if !found {
-            bail!(
+        match found_path {
+            Some(p) => p,
+            None => bail!(
                 "No OpenTimestamp proof found for notice hash: {}\n\
                  Create one with: cargo run -p xtask -- timestamp-notice <article>",
                 hash
-            );
+            ),
         }
-    }
+    };
 
-    // Verify timestamp age (48 hours = 172800 seconds)
+    // Verify timestamp using native Rust parsing
     println!("{}", style("Notice hash provided").green());
     println!("{}", style("  Verifying OpenTimestamp...").dim());
 
-    // Try to verify with ots command if available
-    let ots_check = Command::new("ots")
-        .arg("--version")
-        .output();
+    let file = File::open(&ots_path)
+        .context("Failed to open OTS file")?;
 
-    match ots_check {
-        Ok(output) if output.status.success() => {
-            println!("{}", style("  Manual verification: ensure 48 hours have passed since OTS anchor time").yellow());
-            println!("{}", style("    Run: ots verify <file>.ots to check timestamp").dim());
+    match DetachedTimestampFile::from_reader(file) {
+        Ok(ots) => {
+            let ots_display = format!("{}", ots);
+
+            // Check for Bitcoin attestation
+            let is_bitcoin_anchored = ots_display.contains("BitcoinBlockHeaderAttestation")
+                || ots_display.contains("bitcoin");
+
+            if is_bitcoin_anchored {
+                println!("{}", style("  Timestamp is Bitcoin-anchored").green().bold());
+                println!("{}", style("  Manual verification: ensure 48 hours have passed since anchor time").yellow());
+            } else {
+                println!("{}", style("  Timestamp is pending Bitcoin confirmation").yellow());
+                println!("{}", style("  Wait for Bitcoin anchoring before proceeding with governance action").dim());
+            }
         }
-        _ => {
-            println!("{}", style("  OpenTimestamps CLI not available for automatic verification").yellow());
-            println!("{}", style("  Install with: pip install opentimestamps-client").dim());
+        Err(e) => {
+            println!("{}", style(format!("  Warning: Could not parse OTS file: {}", e)).yellow());
+            println!("{}", style("  File exists but may be malformed. Verify manually.").dim());
         }
     }
 

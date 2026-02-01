@@ -20,7 +20,9 @@
                 </div>
                 {% endif %}
                 <div class="brand">
-                    <h1>{{ config.title }}</h1>
+                    <a href="{{ get_url(path="@/_index.md") }}" style="text-decoration: none; color: inherit;">
+                        <h1>{{ config.title }}</h1>
+                    </a>
                     <div class="live-date" id="live-date">Friday, January 30, 2026 - Live from Diagon Alley</div>
                 </div>
             </div>
