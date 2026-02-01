@@ -34,7 +34,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-stable
+
+      - name: Validate Configuration
+        run: |
+          echo "═══════════════════════════════════════════════════════════════"
+          echo "  Validating config.toml structure"
+          echo "═══════════════════════════════════════════════════════════════"
+          cargo run -p xtask -- validate-config
 
       - name: Verify Article Signatures
         run: |
@@ -45,10 +52,11 @@ jobs:
           cargo run -p xtask -- verify-all-articles
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # STAGE 2: CONTENT INTEGRITY
-  # Verify global site hash and re-sign if needed
+  # STAGE 2: INTEGRITY CHECK + BUILD
+  # Verify content integrity, re-sign if needed, and build static site
+  # (Combined to preserve config.toml changes from signing to build)
   # ═══════════════════════════════════════════════════════════════════════════
-  verify-integrity:
+  build:
     needs: verify-signatures
     runs-on: ubuntu-latest
     steps:
@@ -64,7 +72,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-stable
+
+      - name: Install Zola
+        run: |
+          wget -q -O zola.tar.gz https://github.com/getzola/zola/releases/download/v0.19.2/zola-v0.19.2-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf zola.tar.gz
+          sudo mv zola /usr/local/bin/
+          zola --version
 
       - name: Verify Content Integrity
         run: |
@@ -78,31 +93,12 @@ jobs:
           EDITORIAL_BOARD_PRIVATE_KEY: ${{ secrets.EDITORIAL_BOARD_PRIVATE_KEY }}
         run: |
           if [ -n "$EDITORIAL_BOARD_PRIVATE_KEY" ]; then
+            echo "Signing content with editorial key..."
             cargo run -p xtask -- hash
             cargo run -p xtask -- verify-signature
           else
             echo "⚠️  No editorial key - skipping re-sign (PR mode)"
           fi
-
-  # ═══════════════════════════════════════════════════════════════════════════
-  # STAGE 3: BUILD
-  # Build static site with Zola
-  # ═══════════════════════════════════════════════════════════════════════════
-  build:
-    needs: verify-integrity
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Zola
-        run: |
-          wget -q -O zola.tar.gz https://github.com/getzola/zola/releases/download/v0.19.2/zola-v0.19.2-x86_64-unknown-linux-gnu.tar.gz
-          tar -xzf zola.tar.gz
-          sudo mv zola /usr/local/bin/
-          zola --version
 
       - name: Build Static Site
         run: |
@@ -117,7 +113,7 @@ jobs:
           path: public/
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # STAGE 4: DEPLOY
+  # STAGE 3: DEPLOY
   # Publish to GitHub Pages (main branch only)
   # ═══════════════════════════════════════════════════════════════════════════
   deploy:
