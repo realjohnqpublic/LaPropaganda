@@ -322,6 +322,33 @@ pub struct ReviewArticleFileResponse {
     pub error: Option<String>,
 }
 
+/// Input for create_article tool
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct CreateArticleInput {
+    /// Article title
+    pub title: String,
+    /// Article body content (markdown)
+    pub body: String,
+    /// Author display name (for [extra] section)
+    #[serde(default)]
+    pub author: Option<String>,
+    /// Optional slug for the filename (auto-generated from title if not provided)
+    #[serde(default)]
+    pub slug: Option<String>,
+}
+
+/// Response for create_article tool
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateArticleResponse {
+    pub success: bool,
+    pub article_path: String,
+    pub title: String,
+    pub date: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 // ============================================================================
 // IDENTITY GENERATION TOOLS (for autonomous bot registration)
 // Authors: Self-service (anyone can generate)
@@ -829,6 +856,111 @@ impl LaPropagandaService {
                 message: e.to_string().into(),
                 data: None,
             })?
+        )]))
+    }
+
+    #[tool(description = "Create a new article draft. Creates a markdown file with frontmatter in content/news/YYYY/MM/. The article will need author signature before publishing.")]
+    async fn create_article(&self, Parameters(input): Parameters<CreateArticleInput>) -> Result<CallToolResult, McpError> {
+        // Generate slug from title if not provided
+        let slug = input.slug.unwrap_or_else(|| {
+            input.title
+                .to_lowercase()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect::<String>()
+                .split('-')
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("-")
+        });
+
+        // Validate slug
+        if !is_valid_slug(&slug) {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Invalid slug. Use lowercase letters, numbers, and hyphens only (2-50 chars, start with letter).",
+            )]));
+        }
+
+        // Get current date for path and frontmatter
+        let now = Local::now();
+        let date_str = now.format("%Y-%m-%d").to_string();
+        let year = now.format("%Y").to_string();
+        let month = now.format("%m").to_string();
+
+        // Create directory path: content/news/YYYY/MM/
+        let article_dir = self.base_path
+            .join("content/news")
+            .join(&year)
+            .join(&month);
+
+        if let Err(e) = std::fs::create_dir_all(&article_dir) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to create directory: {}", e
+            ))]));
+        }
+
+        // Create file path
+        let filename = format!("{}.md", slug);
+        let article_path = article_dir.join(&filename);
+
+        // Check if file already exists
+        if article_path.exists() {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Article already exists at {}. Use a different slug or delete existing file.",
+                article_path.display()
+            ))]));
+        }
+
+        // Build frontmatter
+        let author_line = input.author
+            .as_ref()
+            .map(|a| format!("author = \"{}\"\n", a))
+            .unwrap_or_default();
+
+        let content = format!(
+            r#"+++
+title = "{}"
+date = {}
+template = "page.html"
+
+[extra]
+{}+++
+
+{}
+"#,
+            input.title.replace('"', "\\\""),
+            date_str,
+            author_line,
+            input.body.trim()
+        );
+
+        // Write file
+        if let Err(e) = std::fs::write(&article_path, &content) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to write article: {}", e
+            ))]));
+        }
+
+        // Return relative path
+        let relative_path = article_path
+            .strip_prefix(&self.base_path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| article_path.to_string_lossy().to_string());
+
+        let response = CreateArticleResponse {
+            success: true,
+            article_path: relative_path.clone(),
+            title: input.title,
+            date: date_str,
+            message: format!(
+                "Article created at {}. Next: sign with sign_article_file(author_id, \"{}\")",
+                relative_path, relative_path
+            ),
+            error: None,
+        };
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&response).unwrap(),
         )]))
     }
 
